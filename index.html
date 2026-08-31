@@ -28,7 +28,7 @@
 
   /* ── Topbar ─────────────────────────── */
   #topbar{grid-area:top; display:flex; align-items:center; gap:6px; padding:0 10px;
-    background:var(--chrome2); border-bottom:1px solid var(--line);}
+    background:var(--chrome2); border-bottom:1px solid var(--line); overflow-x:auto; overflow-y:hidden;}
   #logo{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace; font-weight:700; letter-spacing:.5px;
     font-size:13px; padding-right:10px; border-right:1px solid var(--line); margin-right:4px; white-space:nowrap;}
   #logo span{color:var(--accent);}
@@ -38,6 +38,8 @@
   .sep{width:1px; height:22px; background:var(--line); margin:0 2px; flex:none;}
   #statechips{display:flex; gap:4px; margin-left:auto; align-items:center;}
   #statechips .lbl{font-size:11px; color:var(--ink-dim); margin-right:2px;}
+  #modechips{display:flex; gap:4px; align-items:center;}
+  #modechips .lbl{font-size:11px; color:var(--ink-dim); margin-right:2px;}
   .chip{display:flex; align-items:center; gap:6px; padding:5px 10px; border-radius:20px;
     font-size:12px; border:1px solid var(--line);}
   .chip i{width:14px; height:3px; border-radius:2px; display:block;}
@@ -154,6 +156,11 @@
   <button class="tb" id="btnLegend">🗒 Legenda +</button>
   <button class="tb" id="btnRefresh" title="Tekening opnieuw opbouwen">↻ Vernieuwen</button>
   <button class="tb" id="btn3d">🧊 3D</button>
+  <div class="sep"></div>
+  <div id="modechips">
+    <button class="chip on" data-mode="bouw" title="Bouwmodus — bouwkundige schaal (m) met bouwsymbolen">🏗 Bouw</button>
+    <button class="chip" data-mode="kaart" title="Kaartmodus — kaartschaal (grotere afstanden) met kaartsymbolen">🗺 Kaart</button>
+  </div>
   <div id="statechips">
     <span class="lbl">Lijnstatus:</span>
     <button class="chip on" data-s="bestaand"><i></i>Bestaand</button>
@@ -188,12 +195,12 @@
     <button class="tool" data-t="cutarea"><svg viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.5"/><circle cx="6" cy="6" r="2.5"/><path d="M8 7.5L20 18M8 16.5L20 6"/></svg>Knippen</button>
   </div></div>
 
-  <div class="tgroup"><h3>Openingen</h3><div class="tgrid">
+  <div class="tgroup" data-mode="bouw"><h3>Openingen</h3><div class="tgrid">
     <button class="tool" data-t="door"><svg viewBox="0 0 24 24"><path d="M4 20h16M6 20V6h2M8 6a12 12 0 0112 12"/></svg>Deur</button>
     <button class="tool" data-t="window"><svg viewBox="0 0 24 24"><path d="M3 10h18M3 14h18M3 10v4M21 10v4M12 10v4"/></svg>Raam</button>
   </div></div>
 
-  <div class="tgroup"><h3>Constructie</h3><div class="tgrid">
+  <div class="tgroup" data-mode="bouw"><h3>Constructie</h3><div class="tgrid">
     <button class="tool" data-t="stairs"><svg viewBox="0 0 24 24"><path d="M4 20h4v-4h4v-4h4V8h4M6 20v-8m6 4V8"/></svg>Rechte trap</button>
     <button class="tool" data-t="stairsQuarter"><svg viewBox="0 0 24 24"><path d="M4 20V8h6M4 14h6M4 8h16v6M10 8v6M14 8v6M18 8v6"/></svg>Kwartslag</button>
     <button class="tool" data-t="stairsHalf"><svg viewBox="0 0 24 24"><path d="M5 20V8a7 7 0 0114 0v12M12 8v12M5 12h7M12 12h7M5 16h7M12 16h7"/></svg>Halfslag</button>
@@ -201,7 +208,7 @@
     <button class="tool" data-t="spiral"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/><path d="M12 4v6M18 8l-4.5 2.5M20 12h-6M18 17l-4.5-3M12 20v-6M6 17l4.5-3M4 12h6M6 8l4.5 2.5"/></svg>Wenteltrap</button>
   </div></div>
 
-  <div class="tgroup"><h3>Brandveiligheid</h3><div class="tgrid">
+  <div class="tgroup" data-mode="bouw"><h3>Brandveiligheid</h3><div class="tgrid">
     <button class="tool" data-t="exitroute" style="color:#7fd49a"><svg viewBox="0 0 24 24" style="stroke:#7fd49a"><path d="M4 20v-8h8V6h6M18 6h-4M18 6v4"/></svg>Route (groen)</button>
     <button class="tool" data-t="extinguisher"><svg viewBox="0 0 24 24"><rect x="9" y="8" width="6" height="12" rx="2"/><path d="M10 8V6h4v2M12 6V4M12 4h4M9 12h6"/></svg>Brandblusser</button>
     <button class="tool" data-t="hosereel"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="3"/><path d="M19 12h3"/></svg>Slanghaspel</button>
@@ -211,32 +218,43 @@
     <button class="tool" data-t="wbdbo"><svg viewBox="0 0 24 24"><path d="M3 12h18M8 9l-2 6M13 9l-2 6M18 9l-2 6"/></svg>WBDBO</button>
   </div></div>
 
-  <div class="tgroup"><h3>Elektra</h3><div class="tgrid">
+  <div class="tgroup" data-mode="bouw"><h3>Elektra</h3><div class="tgrid">
     <button class="tool" data-t="wcd"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/><path d="M12 6V3M8 16l-3 3M16 16l3 3"/></svg>WCD</button>
     <button class="tool" data-t="switch"><svg viewBox="0 0 24 24"><circle cx="12" cy="14" r="4"/><path d="M14.8 11.2L20 6M17 6h3v3"/></svg>Schakelaar</button>
     <button class="tool" data-t="light"><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></svg>Lichtpunt</button>
     <button class="tool" data-t="meterkast"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14"/><path d="M5 5l14 14"/></svg>Meterkast</button>
   </div></div>
 
-  <div class="tgroup"><h3>Sanitair</h3><div class="tgrid">
+  <div class="tgroup" data-mode="bouw"><h3>Sanitair</h3><div class="tgrid">
     <button class="tool" data-t="toilet"><svg viewBox="0 0 24 24"><rect x="8" y="4" width="8" height="5" rx="1"/><ellipse cx="12" cy="15" rx="5" ry="6"/></svg>Toilet</button>
     <button class="tool" data-t="shower"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16"/><path d="M4 4l16 16M20 4L4 20"/><circle cx="12" cy="12" r="2"/></svg>Douche</button>
     <button class="tool" data-t="bath"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="4"/><circle cx="8" cy="12" r="1.5"/></svg>Bad</button>
     <button class="tool" data-t="sink"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="7" ry="5"/><circle cx="12" cy="12" r="1.2"/></svg>Wastafel</button>
   </div></div>
 
-  <div class="tgroup"><h3>Keuken</h3><div class="tgrid">
+  <div class="tgroup" data-mode="bouw"><h3>Keuken</h3><div class="tgrid">
     <button class="tool" data-t="counter"><svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="8"/></svg>Aanrecht</button>
     <button class="tool" data-t="ksink"><svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="8"/><rect x="7" y="10" width="10" height="4" rx="1"/></svg>Spoelbak</button>
     <button class="tool" data-t="stove"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16"/><circle cx="9" cy="9" r="2"/><circle cx="15" cy="9" r="2"/><circle cx="9" cy="15" r="2"/><circle cx="15" cy="15" r="2"/></svg>Kookplaat</button>
     <button class="tool" data-t="fridge"><svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="1"/><path d="M6 10h12"/></svg>Koelkast</button>
   </div></div>
 
-  <div class="tgroup"><h3>Meubilair</h3><div class="tgrid">
+  <div class="tgroup" data-mode="bouw"><h3>Meubilair</h3><div class="tgrid">
     <button class="tool" data-t="bed"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1"/><path d="M4 9h16M7 6.5h4"/></svg>Bed</button>
     <button class="tool" data-t="table"><svg viewBox="0 0 24 24"><rect x="5" y="7" width="14" height="10" rx="1"/></svg>Tafel</button>
     <button class="tool" data-t="sofa"><svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="9" rx="2"/><path d="M3 12h18M8 12v5M16 12v5"/></svg>Bank</button>
     <button class="tool" data-t="closet"><svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="16"/><path d="M12 4v16M5 4l7 8M19 4l-7 8"/></svg>Kast</button>
+  </div></div>
+
+  <div class="tgroup" data-mode="kaart" style="display:none"><h3>Kaartsymbolen</h3><div class="tgrid">
+    <button class="tool" data-t="tree"><svg viewBox="0 0 24 24"><circle cx="12" cy="10" r="7"/><path d="M12 17v4"/></svg>Boom</button>
+    <button class="tool" data-t="lamppost"><svg viewBox="0 0 24 24"><circle cx="12" cy="7" r="3"/><path d="M12 10v11M8.5 21h7"/></svg>Lantaarpaal</button>
+    <button class="tool" data-t="bench"><svg viewBox="0 0 24 24"><path d="M3 8h18v4H3zM5 12v7M19 12v7M3 19h4M17 19h4"/></svg>Bankje</button>
+    <button class="tool" data-t="bin"><svg viewBox="0 0 24 24"><path d="M4 8h16M6 8l1 12h10l1-12M9 8V5h6v3"/></svg>Prullenbak</button>
+    <button class="tool" data-t="picnic"><svg viewBox="0 0 24 24"><path d="M3 9h18M4 9l3 11M20 9l-3 11M3 14h18"/></svg>Picknicktafel</button>
+    <button class="tool" data-t="fountain"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 4v3M12 17v3M4 12h3M17 12h3"/></svg>Fontein</button>
+    <button class="tool" data-t="pin"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>Locatiepin</button>
+    <button class="tool" data-t="northarrow"><svg viewBox="0 0 24 24"><path d="M12 3l4 13-4-3-4 3z" fill="currentColor" stroke="none"/><path d="M12 16v5"/></svg>Noordpijl</button>
   </div></div>
 </div>
 
@@ -277,6 +295,19 @@
   <label>Schaal: <input id="stScale" type="number" value="50" min="5" max="400" step="5"
     style="width:52px;background:var(--chrome);border:1px solid var(--line);color:var(--ink);border-radius:4px;padding:1px 4px;"> px/m</label>
   <span id="stScaleRatio" title="Papierschaal o.b.v. 96 px/inch (standaard schermresolutie)">1:50</span>
+  <label id="mapPresetWrap" style="display:none">Kaartschaal:
+    <select id="stMapPreset" style="background:var(--chrome);border:1px solid var(--line);color:var(--ink);border-radius:4px;padding:1px 4px;">
+      <option value="">— kies —</option>
+      <option value="500">1:500</option>
+      <option value="1000">1:1.000</option>
+      <option value="2500">1:2.500</option>
+      <option value="5000">1:5.000</option>
+      <option value="10000">1:10.000</option>
+      <option value="25000">1:25.000</option>
+      <option value="50000">1:50.000</option>
+      <option value="100000">1:100.000</option>
+    </select>
+  </label>
   <label><input id="stGrid" type="checkbox" checked> Raster</label>
   <label title="Toont het raster óver de geüploade PDF/afbeelding"><input id="stGridTop" type="checkbox"> Raster boven PDF</label>
   <label><input id="stSnap" type="checkbox" checked> Snappen</label>
@@ -326,6 +357,8 @@ const S = {
   lineState: 'bestaand',  // bestaand | nieuw | slopen
   zoom: 1, panX: 80, panY: 60,
   scale: 50,              // px per meter (wereldunits = px)
+  mode: 'bouw',           // bouw | kaart
+  scaleByMode: {bouw: 50, kaart: 3779.53/1000},
   grid: true, snap: true, freehand: false,
   mouse: {x:0, y:0, wx:0, wy:0, down:false},
   temp: null,             // tool-in-uitvoering (muur/witvlak/maatlijn)
@@ -367,6 +400,14 @@ const DEF = {
   smokedetector:{w:0.3},
   firealarm:    {w:0.3},
   exit:         {w:0.8},
+  tree:      {w:4.5},
+  lamppost:  {w:4},
+  bench:     {w:5, l:1.6},
+  bin:       {w:3.5},
+  picnic:    {w:5, l:4.5},
+  fountain:  {w:5},
+  pin:       {w:5},
+  northarrow:{w:6},
 };
 const NOSTATE = new Set(['extinguisher','hosereel','smokedetector','firealarm','exit']);
 const SYMBOL_NAMES = {
@@ -381,7 +422,9 @@ const SYMBOL_NAMES = {
   smokedetector:'Rookmelder', firealarm:'Handbrandmelder', exit:'Vluchtroute (bord)',
   wbdbo:'WBDBO-scheiding', exitroute:'Vluchtroute',
   stairs:'Rechte trap', stairsQuarter:'Kwartslagtrap', stairsHalf:'Halfslagtrap',
-  stairsDouble:'Dubbelkwarttrap'
+  stairsDouble:'Dubbelkwarttrap',
+  tree:'Boom', lamppost:'Lantaarpaal', bench:'Bankje', bin:'Prullenbak',
+  picnic:'Picknicktafel', fountain:'Fontein', pin:'Locatiepin', northarrow:'Noordpijl'
 };
 const SEG_TYPES=['wall','dim','line','arrow','wbdbo','exitroute'];
 const isSeg = o => SEG_TYPES.includes(o.type);
@@ -488,13 +531,25 @@ function draw(){
 }
 
 function drawGrid(vw){
-  const s=S.scale;
   ctx.lineWidth=1/S.zoom;
-  const minor=s*0.5, major=s;
+  let minor, major;
+  if(S.mode==='kaart'){
+    const majorM=niceStep(90/(S.scale*S.zoom));
+    major=px(majorM); minor=px(majorM/5);
+  } else {
+    const s=S.scale; minor=s*0.5; major=s;
+  }
   ctx.strokeStyle='#ECE9E1';
   gridLines(vw, minor);
   ctx.strokeStyle='#DDD9CE';
   gridLines(vw, major);
+}
+/* rondt af naar een "nette" 1-2-5-stap (in meters) rond de gevraagde waarde */
+function niceStep(raw){
+  const pw=Math.pow(10, Math.floor(Math.log10(raw)));
+  const n=raw/pw;
+  const mult = n<1.5?1 : n<3.5?2 : n<7.5?5 : 10;
+  return mult*pw;
 }
 function gridLines(vw, step){
   ctx.beginPath();
@@ -723,7 +778,7 @@ function drawDim(o){
   ctx.moveTo(0,0); ctx.lineTo(9,-4); ctx.moveTo(0,0); ctx.lineTo(9,4);
   ctx.moveTo(len,0); ctx.lineTo(len-9,-4); ctx.moveTo(len,0); ctx.lineTo(len-9,4);
   ctx.stroke();
-  const label=(m(len)).toFixed(2)+' m';
+  const label=fmtDist(m(len));
   ctx.font='13px ui-monospace, monospace';
   ctx.textAlign='center'; ctx.textBaseline='bottom';
   const flip = a> Math.PI/2 || a<-Math.PI/2;
@@ -1025,6 +1080,69 @@ function drawSymbol(o){
       ctx.strokeRect(-w/2,-l/2,w,l);
       ctx.beginPath(); ctx.moveTo(-w/2,-l/2); ctx.lineTo(0,l/2); ctx.lineTo(w/2,-l/2); ctx.stroke();
       break; }
+    case 'tree': {          // boom: kroon (kruinomtrek) + stam
+      const r=w/2;
+      ctx.beginPath(); ctx.arc(0,0,r,0,7); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0,0,r*0.55,0,7); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0,0,px(0.06),0,7); ctx.fill();
+      break; }
+    case 'lamppost': {      // lantaarpaal: lichtpunt met stralen (bovenaanzicht)
+      const r=w/2;
+      ctx.beginPath(); ctx.arc(0,0,r*0.5,0,7); ctx.stroke();
+      ctx.beginPath();
+      for(let i=0;i<8;i++){ const a=i*Math.PI/4;
+        ctx.moveTo(Math.cos(a)*r*0.58,Math.sin(a)*r*0.58); ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r); }
+      ctx.stroke();
+      ctx.beginPath(); ctx.arc(0,0,px(0.05),0,7); ctx.fill();
+      break; }
+    case 'bench': {         // bankje: kader + zitplanken
+      ctx.strokeRect(-w/2,-l/2,w,l);
+      ctx.beginPath();
+      for(let x=-w/2+px(0.18); x<w/2-px(0.05); x+=px(0.22)){ ctx.moveTo(x,-l/2); ctx.lineTo(x,l/2); }
+      ctx.stroke();
+      break; }
+    case 'bin': {           // prullenbak: cirkel met kruis
+      const r=w/2;
+      ctx.beginPath(); ctx.arc(0,0,r,0,7); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-r*0.55,-r*0.55); ctx.lineTo(r*0.55,r*0.55);
+      ctx.moveTo(r*0.55,-r*0.55); ctx.lineTo(-r*0.55,r*0.55);
+      ctx.stroke();
+      break; }
+    case 'picnic': {        // picknicktafel: blad + twee banken
+      ctx.strokeRect(-w/2, -l*0.16, w, l*0.32);
+      ctx.strokeRect(-w/2, -l/2, w, l*0.18);
+      ctx.strokeRect(-w/2, l/2-l*0.18, w, l*0.18);
+      break; }
+    case 'fountain': {      // fontein: bassin + waterstralen
+      const r=w/2;
+      ctx.beginPath(); ctx.arc(0,0,r,0,7); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0,0,r*0.5,0,7); ctx.stroke();
+      ctx.beginPath();
+      for(let i=0;i<6;i++){ const a=i*Math.PI/3;
+        ctx.moveTo(0,0); ctx.lineTo(Math.cos(a)*r*0.42,Math.sin(a)*r*0.42); }
+      ctx.stroke();
+      break; }
+    case 'pin': {           // locatiepin: doelkruis-marker
+      const r=w/2;
+      ctx.beginPath(); ctx.arc(0,0,r*0.6,0,7); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0,0,r*0.2,0,7); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-r,0); ctx.lineTo(-r*0.35,0);
+      ctx.moveTo(r*0.35,0); ctx.lineTo(r,0);
+      ctx.moveTo(0,-r); ctx.lineTo(0,-r*0.35);
+      ctx.moveTo(0,r*0.35); ctx.lineTo(0,r);
+      ctx.stroke();
+      break; }
+    case 'northarrow': {    // noordpijl
+      const r=w/2;
+      ctx.beginPath();
+      ctx.moveTo(0,-r); ctx.lineTo(r*0.32,r*0.12); ctx.lineTo(0,-r*0.12); ctx.lineTo(-r*0.32,r*0.12);
+      ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(0,-r*0.12); ctx.lineTo(0,r); ctx.stroke();
+      ctx.font=`bold ${px(0.28)}px ui-sans-serif`; ctx.textAlign='center'; ctx.textBaseline='bottom';
+      ctx.fillText('N',0,-r-2);
+      break; }
   }
   ctx.restore();
 }
@@ -1100,7 +1218,7 @@ function drawTemp(){
     ctx.beginPath(); ctx.moveTo(t.x1,t.y1); ctx.lineTo(t.x2,t.y2); ctx.stroke();
     ctx.setLineDash([]); ctx.globalAlpha=1;
     ctx.fillStyle='#1F5FA8'; ctx.font=`${13/S.zoom}px ui-monospace`;
-    ctx.fillText(m(Math.hypot(t.x2-t.x1,t.y2-t.y1)).toFixed(2)+' m', t.x2+10/S.zoom, t.y2-10/S.zoom);
+    ctx.fillText(fmtDist(m(Math.hypot(t.x2-t.x1,t.y2-t.y1))), t.x2+10/S.zoom, t.y2-10/S.zoom);
   }
   if(t.kind==='erase'){
     ctx.fillStyle='rgba(255,255,255,.75)';
@@ -1117,7 +1235,7 @@ function drawTemp(){
     drawLineShape({type:t.kind, x1:t.x1,y1:t.y1,x2:t.x2,y2:t.y2, th:t.th, state:S.lineState});
     ctx.globalAlpha=1;
     ctx.fillStyle='#1F5FA8'; ctx.font=`${13/S.zoom}px ui-monospace`;
-    ctx.fillText(m(Math.hypot(t.x2-t.x1,t.y2-t.y1)).toFixed(2)+' m', t.x2+10/S.zoom, t.y2-10/S.zoom);
+    ctx.fillText(fmtDist(m(Math.hypot(t.x2-t.x1,t.y2-t.y1))), t.x2+10/S.zoom, t.y2-10/S.zoom);
   }
   if(t.kind==='wbdbo'){
     ctx.globalAlpha=.75;
@@ -1360,7 +1478,7 @@ cv.addEventListener('mousemove', e=>{
   const sx=e.clientX-r.left, sy=e.clientY-r.top;
   const w=toW(sx,sy);
   S.mouse={...S.mouse, x:sx, y:sy, wx:w.x, wy:w.y};
-  stPos.textContent=`x: ${m(w.x).toFixed(2)} m · y: ${m(w.y).toFixed(2)} m`;
+  stPos.textContent=`x: ${fmtDist(m(w.x))} · y: ${fmtDist(m(w.y))}`;
 
   if(lastPan){
     S.panX+=sx-lastPan.sx; S.panY+=sy-lastPan.sy;
@@ -2247,9 +2365,9 @@ function initToolbar(){
   });
   rebuildPinned(); refreshPinMarks();
 }
-document.querySelectorAll('.chip').forEach(c=>{
+document.querySelectorAll('#statechips .chip').forEach(c=>{
   c.addEventListener('click', ()=>{
-    document.querySelectorAll('.chip').forEach(x=>x.classList.remove('on'));
+    document.querySelectorAll('#statechips .chip').forEach(x=>x.classList.remove('on'));
     c.classList.add('on');
     S.lineState=c.dataset.s;
     if(S.sel && S.sel.state!==undefined){ S.sel.state=S.lineState; showProps(); draw(); }
@@ -2316,7 +2434,7 @@ function addUnderlay(dataUrl, w0, h0){
 
 /* opslaan / openen project */
 document.getElementById('btnSave').onclick=()=>{
-  const data=JSON.stringify({v:2, scale:S.scale, objects:S.objects,
+  const data=JSON.stringify({v:2, scale:S.scale, mode:S.mode, objects:S.objects,
     ui:S.ui, gumSize:S.gumSize, gumColor:S.gumColor}, replacer);
   dl(new Blob([data],{type:'application/json'}), 'plattegrond.plan.json');
 };
@@ -2326,7 +2444,10 @@ function loadProject(file){
     try{
       const d=JSON.parse(rd.result);
       pushUndo();
-      S.scale=d.scale||50; stScale.value=S.scale; updScaleRatio();
+      if(d.mode && d.mode!==S.mode) setMode(d.mode);
+      S.scale=d.scale||S.scale;
+      stScale.value = S.mode==='kaart' ? +S.scale.toFixed(3) : Math.round(S.scale);
+      updScaleRatio();
       S.objects=d.objects||[];
       if(d.ui && Array.isArray(d.ui.pinned)){
         S.ui=d.ui;
@@ -2426,9 +2547,44 @@ function updScaleRatio(){
   stScaleRatio.textContent=`1:${n}`;
 }
 stScale.addEventListener('change', ()=>{
-  S.scale=Math.max(5, parseFloat(stScale.value)||50); draw(); updScaleRatio();
+  const min = S.mode==='kaart' ? 0.005 : 5;
+  S.scale=Math.max(min, parseFloat(stScale.value)||S.scale); draw(); updScaleRatio();
 });
 updScaleRatio();
+
+/* ═════════ MODUS: BOUW / KAART ═════════ */
+function fmtDist(meters){
+  return Math.abs(meters)>=1000 ? (meters/1000).toFixed(2)+' km' : meters.toFixed(2)+' m';
+}
+function setMode(mode){
+  if(mode===S.mode) return;
+  S.scaleByMode[S.mode]=S.scale;
+  S.mode=mode;
+  document.querySelectorAll('#modechips .chip').forEach(c=>c.classList.toggle('on', c.dataset.mode===mode));
+  document.querySelectorAll('#tools .tgroup[data-mode]').forEach(g=>{
+    g.style.display = g.dataset.mode===mode ? '' : 'none';
+  });
+  const kaart = mode==='kaart';
+  stScale.min = kaart ? 0.005 : 5;
+  stScale.max = kaart ? 50 : 400;
+  stScale.step = kaart ? 0.01 : 5;
+  document.getElementById('mapPresetWrap').style.display = kaart ? '' : 'none';
+  S.scale = S.scaleByMode[mode];
+  stScale.value = kaart ? +S.scale.toFixed(3) : Math.round(S.scale);
+  updScaleRatio();
+  setTool('select');
+  draw();
+}
+document.querySelectorAll('#modechips .chip').forEach(c=>{
+  c.addEventListener('click', ()=> setMode(c.dataset.mode));
+});
+document.getElementById('stMapPreset').addEventListener('change', e=>{
+  const n=parseFloat(e.target.value);
+  if(!n) return;
+  S.scale=3779.53/n;
+  stScale.value=+S.scale.toFixed(3);
+  updScaleRatio(); draw();
+});
 document.getElementById('stGrid').addEventListener('change', e=>{ S.grid=e.target.checked; draw(); });
 document.getElementById('stGridTop').addEventListener('change', e=>{ S.gridTop=e.target.checked; draw(); });
 document.getElementById('stSnap').addEventListener('change', e=>{ S.snap=e.target.checked; });
