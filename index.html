@@ -276,9 +276,11 @@
   <span>|</span>
   <label>Schaal: <input id="stScale" type="number" value="50" min="5" max="400" step="5"
     style="width:52px;background:var(--chrome);border:1px solid var(--line);color:var(--ink);border-radius:4px;padding:1px 4px;"> px/m</label>
+  <span id="stScaleRatio" title="Papierschaal o.b.v. 96 px/inch (standaard schermresolutie)">1:50</span>
   <label><input id="stGrid" type="checkbox" checked> Raster</label>
   <label title="Toont het raster óver de geüploade PDF/afbeelding"><input id="stGridTop" type="checkbox"> Raster boven PDF</label>
   <label><input id="stSnap" type="checkbox" checked> Snappen</label>
+  <label title="Sleep met ingedrukte muisknop om een muur of lijn uit de vrije hand te tekenen (i.p.v. klik-klik rechte segmenten)"><input id="stFreehand" type="checkbox"> Vrije hand (muur/lijn)</label>
   <span class="grow"></span>
   <span id="stCount">0 objecten</span>
   <button id="stZoomOut">−</button>
@@ -324,7 +326,7 @@ const S = {
   lineState: 'bestaand',  // bestaand | nieuw | slopen
   zoom: 1, panX: 80, panY: 60,
   scale: 50,              // px per meter (wereldunits = px)
-  grid: true, snap: true,
+  grid: true, snap: true, freehand: false,
   mouse: {x:0, y:0, wx:0, wy:0, down:false},
   temp: null,             // tool-in-uitvoering (muur/witvlak/maatlijn)
   drag: null,             // sleepstatus
@@ -528,7 +530,7 @@ function drawObj(o){
 
 function drawWall(o){
   ctx.save();
-  ctx.strokeStyle=stateColor(o.state);
+  ctx.strokeStyle=o.customColor || stateColor(o.state);
   ctx.lineWidth=o.th;
   ctx.lineCap='butt';
   if(o.state==='slopen') ctx.setLineDash([px(0.25),px(0.15)]);
@@ -537,7 +539,7 @@ function drawWall(o){
 }
 
 function applyStroke(o){
-  ctx.strokeStyle=stateColor(o.state);
+  ctx.strokeStyle=o.customColor || stateColor(o.state);
   ctx.lineWidth=o.th||2;
   ctx.lineCap='round'; ctx.lineJoin='round';
   if(o.state==='slopen') ctx.setLineDash([10,7]);
@@ -1145,6 +1147,16 @@ function drawTemp(){
   if(t.kind==='pencil'){
     drawPencil({pts:t.pts, th:t.th, state:S.lineState});
   }
+  if(t.kind==='wallFree'){
+    ctx.save(); ctx.globalAlpha=.75;
+    ctx.strokeStyle=stateColor(S.lineState); ctx.lineWidth=t.th; ctx.lineCap='round'; ctx.lineJoin='round';
+    ctx.beginPath(); ctx.moveTo(t.pts[0].x,t.pts[0].y);
+    for(let i=1;i<t.pts.length;i++) ctx.lineTo(t.pts[i].x,t.pts[i].y);
+    ctx.stroke(); ctx.restore();
+  }
+  if(t.kind==='lineFree'){
+    drawPencil({pts:t.pts, th:t.th, state:S.lineState});
+  }
   if(t.kind==='rect'){
     ctx.globalAlpha=.75;
     drawRectShape({x:Math.min(t.x1,t.x2), y:Math.min(t.y1,t.y2),
@@ -1170,6 +1182,22 @@ function drawTemp(){
 }
 
 /* ═════════ HIT-TEST ═════════ */
+/* vereenvoudigt een vrije-hand-punten-pad tot een handvol rechte segmenten (Douglas-Peucker) */
+function simplifyPath(pts, eps){
+  if(pts.length<3) return pts;
+  let maxD=0, idx=0;
+  const [a,b]=[pts[0], pts[pts.length-1]];
+  for(let i=1;i<pts.length-1;i++){
+    const d=distSeg(pts[i].x,pts[i].y,a.x,a.y,b.x,b.y);
+    if(d>maxD){ maxD=d; idx=i; }
+  }
+  if(maxD>eps){
+    const left=simplifyPath(pts.slice(0,idx+1), eps);
+    const right=simplifyPath(pts.slice(idx), eps);
+    return left.slice(0,-1).concat(right);
+  }
+  return [a,b];
+}
 function distSeg(px_,py,x1,y1,x2,y2){
   const dx=x2-x1, dy=y2-y1, L2=dx*dx+dy*dy;
   let t = L2? ((px_-x1)*dx+(py-y1)*dy)/L2 : 0;
@@ -1181,7 +1209,10 @@ function hit(wx,wy){
   // van boven naar onder: tekst/maat/legenda > symbolen/schetsen > muren > vulling > witvlak > onderlaag
   const HP={text:0, dim:0, legend:0, wall:2, wbdbo:2, fill:3, erase:4, underlay:5};
   const order = t => HP[t] ?? 1;
-  const objs=[...S.objects].sort((a,b)=>order(a.type)-order(b.type));
+  // bij gelijke prioriteit (bv. meerdere onderlagen over elkaar) telt de bovenste (later getekende) het eerst
+  const objs=S.objects.map((o,i)=>({o,i}))
+    .sort((a,b)=>order(a.o.type)-order(b.o.type) || b.i-a.i)
+    .map(e=>e.o);
   for(const o of objs){
     if(o.type==='mask') continue;
     if(o.type==='wall'){ if(distSeg(wx,wy,o.x1,o.y1,o.x2,o.y2) <= o.th/2+tol) return o; }
@@ -1256,6 +1287,7 @@ cv.addEventListener('mousedown', e=>{
       draw(); break;
     }
     case 'wall': {
+      if(S.freehand){ S.temp={kind:'wallFree', pts:[w], th:px(0.15)}; break; }
       if(!S.temp) S.temp={kind:'wall', x1:wp.x, y1:wp.y, x2:wp.x, y2:wp.y, th:px(0.15)};
       else {
         finishWallSeg();
@@ -1266,6 +1298,7 @@ cv.addEventListener('mousedown', e=>{
     case 'erase': S.temp={kind:'erase', x1:wp.x,y1:wp.y,x2:wp.x,y2:wp.y}; break;
     case 'fill': S.temp={kind:'fill', x1:wp.x,y1:wp.y,x2:wp.x,y2:wp.y}; break;
     case 'line': {
+      if(S.freehand){ S.temp={kind:'lineFree', pts:[w], th:2}; break; }
       if(!S.temp) S.temp={kind:'line', x1:wp.x, y1:wp.y, x2:wp.x, y2:wp.y, th:2};
       else {
         finishLineSeg();
@@ -1409,6 +1442,9 @@ cv.addEventListener('mousemove', e=>{
     } else if(t.kind==='pencil'){
       const lp=t.pts[t.pts.length-1];
       if(Math.hypot(w.x-lp.x, w.y-lp.y) > 2/S.zoom) t.pts.push({x:w.x, y:w.y});
+    } else if(t.kind==='wallFree' || t.kind==='lineFree'){
+      const lp=t.pts[t.pts.length-1];
+      if(Math.hypot(w.x-lp.x, w.y-lp.y) > 4/S.zoom) t.pts.push({x:w.x, y:w.y});
     } else {
       const sp=snapPt(w);
       t.x2=sp.x; t.y2=sp.y;
@@ -1504,6 +1540,20 @@ addEventListener('mouseup', ()=>{
       pushUndo();
       S.objects.push({id:idSeq++, type:'pencil', pts:t.pts, th:t.th, state:S.lineState});
       updCount();
+    }
+    S.temp=null; draw();
+  }
+  else if(t.kind==='wallFree' || t.kind==='lineFree'){
+    const pts=simplifyPath(t.pts, 5/S.zoom);
+    if(pts.length>1){
+      pushUndo();
+      const type = t.kind==='wallFree' ? 'wall' : 'line';
+      let last=null;
+      for(let i=1;i<pts.length;i++){
+        last={id:idSeq++, type, x1:pts[i-1].x, y1:pts[i-1].y, x2:pts[i].x, y2:pts[i].y, th:t.th, state:S.lineState};
+        S.objects.push(last);
+      }
+      S.sel=last; showProps(); updCount();
     }
     S.temp=null; draw();
   }
@@ -1787,7 +1837,8 @@ function finishCalib(p2){
   } else {
     S.scale=lenPx/meters;
     stScale.value=Math.round(S.scale);
-    hint.textContent=`Schaal ingesteld op ${S.scale.toFixed(1)} px/m.`;
+    updScaleRatio();
+    hint.textContent=`Schaal ingesteld op ${S.scale.toFixed(1)} px/m (${stScaleRatio.textContent}).`;
   }
   draw();
 }
@@ -1901,6 +1952,18 @@ function showProps(){
   if(o.type==='line'||o.type==='arrow'||o.type==='exitroute'){
     h+=fld('Lengte', `<input type="text" disabled value="${m(Math.hypot(o.x2-o.x1,o.y2-o.y1)).toFixed(2)} m">`);
   }
+  if(['wall','line','arrow','rect','circle','pencil'].includes(o.type)){
+    const cur=(o.customColor||stateColor(o.state)).toLowerCase();
+    const grayMatch=/^#([0-9a-f]{2})\1\1$/.exec(cur);
+    const grayVal=grayMatch ? parseInt(grayMatch[1],16) : 0;
+    h+=fld('Kleur', `<input id="pLineC" type="color" value="${cur}">`);
+    h+=fld(`Grijswaarde (zwart → grijs)`, `<input id="pLineGray" type="range" min="0" max="200" value="${grayVal}">`);
+    h+=`<div class="prow" style="gap:4px;margin-bottom:6px">${
+      ['#000000','#333333','#555555','#808080','#AAAAAA'].map(c=>
+        `<button class="pbtn swatch" data-c="${c}" title="${c}" style="background:${c};width:26px;height:26px;padding:0;border-radius:5px;flex:none;border:1px solid var(--line)"></button>`).join('')
+    }</div>`;
+    h+=`<div class="prow" style="margin-bottom:10px"><button class="pbtn" id="pLineCAuto">Statuskleur gebruiken</button></div>`;
+  }
   if(o.w!==undefined && o.type!=='erase' && o.type!=='underlay'){
     h+=fld('Breedte (m)', `<input id="pW" type="number" step="0.05" min="0.1" value="${o.w}">`);
   }
@@ -1993,6 +2056,11 @@ function showProps(){
   bind('pSpan', e=>{ o.span=parseInt(e.target.value); draw(); });
   bind('pMin', e=>{ o.min=parseInt(e.target.value); draw(); });
   bind('pFillC', e=>{ o.customColor=e.target.value; draw(); });
+  bind('pLineC', e=>{ o.customColor=e.target.value; draw(); });
+  bind('pLineGray', e=>{
+    const v=Math.max(0,Math.min(200,parseInt(e.target.value)||0)).toString(16).padStart(2,'0');
+    o.customColor='#'+v+v+v; draw();
+  });
   bind('pEraseC', e=>{ o.color=e.target.value; draw(); });
   bind('pLegT', e=>{ o.title=e.target.value; draw(); });
   bind('pRot', e=>{ o.rot=parseInt(e.target.value); draw(); });
@@ -2019,6 +2087,10 @@ function showProps(){
   click('pDel', delSel);
   click('pDup', dupSel);
   click('pFillState', ()=>{ delete o.customColor; showProps(); draw(); });
+  click('pLineCAuto', ()=>{ delete o.customColor; showProps(); draw(); });
+  document.querySelectorAll('#props .swatch').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ o.customColor=btn.dataset.c; showProps(); draw(); });
+  });
   click('pEraseAuto', ()=>{ delete o.color; showProps(); draw(); });
   click('pLegR', ()=>{ pushUndo(); o.items=buildLegendItems(); draw(); });
   const fine=(id,d)=>click(id, ()=>{ o.rot=((o.rot||0)+d+360)%360; showProps(); draw(); });
@@ -2079,12 +2151,12 @@ function refreshProps(){ /* lichte refresh bij slepen: alleen bij muur lengte */
 const HINTS={
   select:'Klik = selecteren · sleep = verplaatsen · hoekgreep = schalen · eindpunt slepen + Ctrl = lijn verlengen langs dezelfde richting',
   pan:'Sleep om het beeld te verschuiven',
-  wall:'Klik = beginpunt · klik = volgend punt (kettingtekenen) · rechtermuisknop of Esc = stoppen · Shift = vrije hoek',
+  wall:'Klik = beginpunt · klik = volgend punt (kettingtekenen) · rechtermuisknop of Esc = stoppen · Shift = vrije hoek · "Vrije hand" onderin = slepen voor een handgetekende muur',
   erase:'Sleep een rechthoek: maskeert delen van de ondergelegen PDF (kleur instelbaar via selectie)',
   text:'Klik op de tekening en typ · Enter bevestigt · na plaatsing: hoekgreep = groter/kleiner',
   dim:'Klik beginpunt en eindpunt · toont maat in meters op basis van de schaal',
   calib:'Schaal instellen: klik 2 punten met bekende afstand op de tekening (bijv. een maatlijn op de PDF) en voer de meters in',
-  line:'Klik = punt · klik = volgend punt — haakse hoeken maak je vanzelf door de 45°/90°-snapping · rechtsklik of Esc = stoppen · Shift = vrije hoek',
+  line:'Klik = punt · klik = volgend punt — haakse hoeken maak je vanzelf door de 45°/90°-snapping · rechtsklik of Esc = stoppen · Shift = vrije hoek · "Vrije hand" onderin = slepen voor een handgetekende lijn',
   pencil:'Sleep om uit de vrije hand te tekenen',
   rect:'Sleep om een rechthoek te tekenen',
   circle:'Sleep om een cirkel of ellips te tekenen',
@@ -2254,7 +2326,7 @@ function loadProject(file){
     try{
       const d=JSON.parse(rd.result);
       pushUndo();
-      S.scale=d.scale||50; stScale.value=S.scale;
+      S.scale=d.scale||50; stScale.value=S.scale; updScaleRatio();
       S.objects=d.objects||[];
       if(d.ui && Array.isArray(d.ui.pinned)){
         S.ui=d.ui;
@@ -2345,14 +2417,22 @@ wrap.addEventListener('drop', e=>{
 const stPos=document.getElementById('stPos'),
       stZoom=document.getElementById('stZoom'),
       stScale=document.getElementById('stScale'),
+      stScaleRatio=document.getElementById('stScaleRatio'),
       btnUndo=document.getElementById('btnUndo'),
       btnRedo=document.getElementById('btnRedo');
+function updScaleRatio(){
+  // 96 px/inch is de gangbare aanname voor schermresolutie (CSS-pixels)
+  const n=Math.round(3779.53/S.scale);
+  stScaleRatio.textContent=`1:${n}`;
+}
 stScale.addEventListener('change', ()=>{
-  S.scale=Math.max(5, parseFloat(stScale.value)||50); draw();
+  S.scale=Math.max(5, parseFloat(stScale.value)||50); draw(); updScaleRatio();
 });
+updScaleRatio();
 document.getElementById('stGrid').addEventListener('change', e=>{ S.grid=e.target.checked; draw(); });
 document.getElementById('stGridTop').addEventListener('change', e=>{ S.gridTop=e.target.checked; draw(); });
 document.getElementById('stSnap').addEventListener('change', e=>{ S.snap=e.target.checked; });
+document.getElementById('stFreehand').addEventListener('change', e=>{ S.freehand=e.target.checked; cancelTemp(); });
 document.getElementById('stZoomIn').onclick=()=>zoomCenter(1.2);
 document.getElementById('stZoomOut').onclick=()=>zoomCenter(1/1.2);
 function zoomCenter(f){
@@ -2364,7 +2444,7 @@ function zoomCenter(f){
 }
 document.getElementById('stFit').onclick=()=>{
   const b=contentBounds(); if(!b) return;
-  const z=Math.min(wrap.clientWidth/b.w, wrap.clientHeight/b.h)*0.95;
+  const z=Math.min(wrap.clientWidth/b.w, wrap.clientHeight/b.h)*0.8;
   S.zoom=Math.min(4,Math.max(0.08,z));
   S.panX=(wrap.clientWidth-b.w*S.zoom)/2 - b.x*S.zoom;
   S.panY=(wrap.clientHeight-b.h*S.zoom)/2 - b.y*S.zoom;
