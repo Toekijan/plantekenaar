@@ -193,6 +193,7 @@
     <button class="tool" data-t="fill"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="1" fill="currentColor" stroke="none" opacity=".85"/></svg>Vlak (vulling)</button>
     <button class="tool" data-t="copyarea"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="1"/><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"/></svg>Kopiëren</button>
     <button class="tool" data-t="cutarea"><svg viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.5"/><circle cx="6" cy="6" r="2.5"/><path d="M8 7.5L20 18M8 16.5L20 6"/></svg>Knippen</button>
+    <button class="tool" data-t="pastearea"><svg viewBox="0 0 24 24"><rect x="6" y="4" width="12" height="18" rx="1"/><rect x="9" y="2" width="6" height="4" rx="1"/></svg>Plakken</button>
   </div></div>
 
   <div class="tgroup" data-mode="bouw"><h3>Openingen</h3><div class="tgrid">
@@ -254,7 +255,7 @@
     <button class="tool" data-t="picnic"><svg viewBox="0 0 24 24"><path d="M3 9h18M4 9l3 11M20 9l-3 11M3 14h18"/></svg>Picknicktafel</button>
     <button class="tool" data-t="fountain"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 4v3M12 17v3M4 12h3M17 12h3"/></svg>Fontein</button>
     <button class="tool" data-t="pin"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>Locatiepin</button>
-    <button class="tool" data-t="northarrow"><svg viewBox="0 0 24 24"><path d="M12 3l4 13-4-3-4 3z" fill="currentColor" stroke="none"/><path d="M12 16v5"/></svg>Noordpijl</button>
+    <button class="tool" data-t="northarrow"><svg viewBox="0 0 24 24"><path d="M12 2l4 13-4-3-4 3z" fill="currentColor" stroke="none"/><path d="M12 15v7M6 18h12"/></svg>Noordpijl</button>
   </div></div>
 </div>
 
@@ -276,8 +277,9 @@
       <kbd>R</kbd> roteer 90°<br>
       <kbd>Del</kbd> verwijderen<br>
       <kbd>Ctrl+D</kbd> dupliceren<br>
+      <kbd>Ctrl+V</kbd> plakt klembord op muispositie<br>
       <kbd>Esc</kbd> annuleren<br>
-      <kbd>Shift</kbd> vrije hoek (muur/lijn)<br>
+      <kbd>Shift</kbd> keert "Hoek snappen" tijdelijk om (muur/lijn)<br>
       <kbd>Ctrl</kbd> + eindpunt slepen = lijn verlengen<br>
       <kbd>[</kbd> <kbd>]</kbd> gum kleiner/groter<br>
       Blauwe hoekgreep = schalen<br>
@@ -312,6 +314,7 @@
   <label title="Toont het raster óver de geüploade PDF/afbeelding"><input id="stGridTop" type="checkbox"> Raster boven PDF</label>
   <label><input id="stSnap" type="checkbox" checked> Snappen</label>
   <label title="Sleep met ingedrukte muisknop om een muur of lijn uit de vrije hand te tekenen (i.p.v. klik-klik rechte segmenten)"><input id="stFreehand" type="checkbox"> Vrije hand (muur/lijn)</label>
+  <label title="Klikt de hoek van muur/lijn vast op stappen van 45° (0°, 45°, 90°, ...). Shift keert dit tijdelijk om."><input id="stAngleSnap" type="checkbox"> Hoek snappen (45°)</label>
   <span class="grow"></span>
   <span id="stCount">0 objecten</span>
   <button id="stZoomOut">−</button>
@@ -359,7 +362,8 @@ const S = {
   scale: 50,              // px per meter (wereldunits = px)
   mode: 'bouw',           // bouw | kaart
   scaleByMode: {bouw: 50, kaart: 3779.53/1000},
-  grid: true, snap: true, freehand: false,
+  grid: true, snap: true, freehand: false, angleSnap: false,
+  clipboard: null,        // {x,y,objs:[...]} — via Kopiëren/Knippen gevuld, via Plakken/Ctrl+V geplaatst
   mouse: {x:0, y:0, wx:0, wy:0, down:false},
   temp: null,             // tool-in-uitvoering (muur/witvlak/maatlijn)
   drag: null,             // sleepstatus
@@ -1134,14 +1138,18 @@ function drawSymbol(o){
       ctx.moveTo(0,r*0.35); ctx.lineTo(0,r);
       ctx.stroke();
       break; }
-    case 'northarrow': {    // noordpijl
+    case 'northarrow': {    // noordpijl: N-label, pijl omhoog, kruislijn, NOORD-label
       const r=w/2;
+      ctx.textAlign='center';
+      ctx.font=`bold ${px(0.34)}px ui-sans-serif`; ctx.textBaseline='bottom';
+      ctx.fillText('N',0,-r*1.25);
       ctx.beginPath();
-      ctx.moveTo(0,-r); ctx.lineTo(r*0.32,r*0.12); ctx.lineTo(0,-r*0.12); ctx.lineTo(-r*0.32,r*0.12);
+      ctx.moveTo(0,-r); ctx.lineTo(r*0.3,-r*0.35); ctx.lineTo(0,-r*0.55); ctx.lineTo(-r*0.3,-r*0.35);
       ctx.closePath(); ctx.fill();
-      ctx.beginPath(); ctx.moveTo(0,-r*0.12); ctx.lineTo(0,r); ctx.stroke();
-      ctx.font=`bold ${px(0.28)}px ui-sans-serif`; ctx.textAlign='center'; ctx.textBaseline='bottom';
-      ctx.fillText('N',0,-r-2);
+      ctx.beginPath(); ctx.moveTo(0,-r*0.55); ctx.lineTo(0,r); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-r,0); ctx.lineTo(r,0); ctx.stroke();
+      ctx.font=`${px(0.22)}px ui-sans-serif`; ctx.textBaseline='top';
+      ctx.fillText('NOORD',0,r+4);
       break; }
   }
   ctx.restore();
@@ -1183,6 +1191,10 @@ function bboxOf(o){
     const tw=Math.max(...lines.map(l=>ctx.measureText(l).width));
     return {x:o.x-4,y:o.y-4,w:tw+8,h:lines.length*o.size*1.25+8};
   }
+  if(o.type==='northarrow'){
+    const r=px(o.w||6)/2;
+    return {x:o.x-r*1.2, y:o.y-r*1.7, w:r*2.4, h:r*2.9};
+  }
   const w=px(o.w||0.4), l=px(o.l||o.w||0.4);
   const r=Math.hypot(w,l)/2+8;
   return {x:o.x-r, y:o.y-r, w:r*2, h:r*2};
@@ -1208,6 +1220,31 @@ function drawSelection(o){
   ctx.restore();
 }
 
+/* graden-boog: toont bij het tekenen de hoek t.o.v. horizontaal, vanuit het startpunt */
+function drawAngleArc(x1,y1,x2,y2){
+  const dx=x2-x1, dy=y2-y1;
+  const L=Math.hypot(dx,dy);
+  if(L<6/S.zoom) return;
+  const a=Math.atan2(dy,dx);
+  // graden weergeven volgens wiskundige conventie: 0°=oost, tegen de klok in (boven=90°)
+  const deg=Math.round((360-(((a*180/Math.PI)+360)%360))%360);
+  const r=Math.min(34/S.zoom, Math.max(14/S.zoom, L*0.35));
+  ctx.save();
+  ctx.strokeStyle='#3D9BE9'; ctx.lineWidth=1/S.zoom;
+  ctx.setLineDash([4/S.zoom,3/S.zoom]);
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x1+r,y1); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  if(a>=0) ctx.arc(x1,y1,r,0,a); else ctx.arc(x1,y1,r,a,0);
+  ctx.stroke();
+  const mid=a/2;
+  const lx=x1+Math.cos(mid)*(r+16/S.zoom), ly=y1+Math.sin(mid)*(r+16/S.zoom);
+  ctx.fillStyle='#3D9BE9'; ctx.font=`${12/S.zoom}px ui-monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(deg+'°', lx, ly);
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.restore();
+}
 function drawTemp(){
   const t=S.temp;
   ctx.save();
@@ -1219,6 +1256,7 @@ function drawTemp(){
     ctx.setLineDash([]); ctx.globalAlpha=1;
     ctx.fillStyle='#1F5FA8'; ctx.font=`${13/S.zoom}px ui-monospace`;
     ctx.fillText(fmtDist(m(Math.hypot(t.x2-t.x1,t.y2-t.y1))), t.x2+10/S.zoom, t.y2-10/S.zoom);
+    drawAngleArc(t.x1,t.y1,t.x2,t.y2);
   }
   if(t.kind==='erase'){
     ctx.fillStyle='rgba(255,255,255,.75)';
@@ -1236,6 +1274,7 @@ function drawTemp(){
     ctx.globalAlpha=1;
     ctx.fillStyle='#1F5FA8'; ctx.font=`${13/S.zoom}px ui-monospace`;
     ctx.fillText(fmtDist(m(Math.hypot(t.x2-t.x1,t.y2-t.y1))), t.x2+10/S.zoom, t.y2-10/S.zoom);
+    drawAngleArc(t.x1,t.y1,t.x2,t.y2);
   }
   if(t.kind==='wbdbo'){
     ctx.globalAlpha=.75;
@@ -1436,6 +1475,10 @@ cv.addEventListener('mousedown', e=>{
     }
     case 'copyarea': S.temp={kind:'copyarea', x1:wp.x,y1:wp.y,x2:wp.x,y2:wp.y}; break;
     case 'cutarea':  S.temp={kind:'cutarea',  x1:wp.x,y1:wp.y,x2:wp.x,y2:wp.y}; break;
+    case 'pastearea':
+      if(S.clipboard) pasteClipboardAt(snapPt(w).x, snapPt(w).y);
+      else hint.textContent='Klembord is leeg — kopieer of knip eerst een gebied.';
+      break;
     case 'exportarea': S.temp={kind:'exportarea', x1:wp.x,y1:wp.y,x2:wp.x,y2:wp.y}; break;
     case 'wbdbo':
       S.temp={kind:'wbdbo', x1:wp.x, y1:wp.y, x2:wp.x, y2:wp.y}; break;
@@ -1555,7 +1598,7 @@ cv.addEventListener('mousemove', e=>{
   if(S.temp){
     const t=S.temp;
     if(t.kind==='wall' || t.kind==='line' || t.kind==='arrow' || t.kind==='wbdbo' || t.kind==='exitroute'){
-      const sp=snapWallSeg({x:t.x1,y:t.y1}, snapPt(w), e.shiftKey);
+      const sp=snapWallSeg({x:t.x1,y:t.y1}, snapPt(w), !angleSnapActive(e.shiftKey));
       t.x2=sp.x; t.y2=sp.y;
     } else if(t.kind==='pencil'){
       const lp=t.pts[t.pts.length-1];
@@ -1620,7 +1663,7 @@ addEventListener('mouseup', ()=>{
     const b={x:Math.min(t.x1,t.x2), y:Math.min(t.y1,t.y2),
              w:Math.abs(t.x2-t.x1), h:Math.abs(t.y2-t.y1)};
     S.temp=null;
-    if(b.w>8 && b.h>8) clipRegion(b, t.kind==='cutarea');
+    if(b.w>8 && b.h>8) copyAreaToClipboard(b, t.kind==='cutarea');
     else draw();
   }
   else if(t.kind==='exportarea'){
@@ -1678,7 +1721,9 @@ addEventListener('mouseup', ()=>{
   // wall / dim / calib gebruiken klik-klik en blijven staan tot volgende klik
 });
 
-/* muur: hoeksnapping op 45° tenzij Shift */
+/* muur/lijn: standaard vrije hoek (360°); hoeksnapping op 45° alleen als "Hoek snappen"-knop aan staat
+   (Shift keert de knopstand tijdelijk om, zowel om aan te zetten als om even los te laten) */
+function angleSnapActive(shiftHeld){ return S.angleSnap !== shiftHeld; }
 function snapWallSeg(p1, p2, free){
   if(free) return p2;
   const dx=p2.x-p1.x, dy=p2.y-p1.y;
@@ -1688,7 +1733,7 @@ function snapWallSeg(p1, p2, free){
 }
 function snapWallPoint(w, shift, o, mode){
   const anchor = mode==='p1' ? {x:o.x2,y:o.y2} : {x:o.x1,y:o.y1};
-  return snapWallSeg(anchor, snapPt(w), shift);
+  return snapWallSeg(anchor, snapPt(w), !angleSnapActive(shift));
 }
 function finishWallSeg(){
   const t=S.temp;
@@ -1778,31 +1823,93 @@ function dominantColor(oc){
     return `rgb(${Math.min(255,r+4)},${Math.min(255,g+4)},${Math.min(255,bl+4)})`;
   }catch(e){ return '#FFFFFF'; }
 }
-function clipRegion(b, cut){
-  pushUndo();
-  const oc=captureRegion(b);
-  const dataUrl=oc.toDataURL('image/png');
-  if(cut){
-    // origineel afdekken met de dominante achtergrondkleur van de uitsnede
-    S.objects.push({id:idSeq++, type:'erase', x:b.x, y:b.y, w:b.w, h:b.h,
-      color:dominantColor(oc)});
-    // vectorobjecten die volledig binnen het kader vallen verwijderen
-    S.objects=S.objects.filter(o=>{
-      if(o.type==='underlay'||o.type==='erase'||o.type==='mask') return true;
-      const ob=bboxOf(o);
-      const inside = ob.x>=b.x-2 && ob.y>=b.y-2 &&
-                     ob.x+ob.w<=b.x+b.w+2 && ob.y+ob.h<=b.y+b.h+2;
-      return !inside;
-    });
+/* rastert alleen de ondergrond (PDF/afbeelding/kaart-underlay) binnen kader b, uitgesneden op maat */
+function captureUnderlaySnippet(b){
+  const hit = S.objects.some(o=>{
+    if(o.type!=='underlay') return false;
+    const ob=bboxOf(o);
+    return ob.x<b.x+b.w && ob.x+ob.w>b.x && ob.y<b.y+b.h && ob.y+ob.h>b.y;
+  });
+  if(!hit) return null;
+  const scale=2;
+  const oc=document.createElement('canvas');
+  oc.width=Math.max(2,Math.min(8000, Math.round(b.w*scale)));
+  oc.height=Math.max(2,Math.min(8000, Math.round(b.h*scale)));
+  const c2=oc.getContext('2d');
+  c2.scale(oc.width/b.w, oc.height/b.h);
+  c2.translate(-b.x,-b.y);
+  c2.beginPath(); c2.rect(b.x,b.y,b.w,b.h); c2.clip();
+  const saved=ctx; ctx=c2;
+  try{ S.objects.filter(o=>o.type==='underlay').forEach(o=>drawObj(o)); }
+  finally { ctx=saved; }
+  return oc;
+}
+/* selecteert de objecten die volledig binnen kader b vallen (als vector, dus bewerkbaar blijvend)
+   én snijdt de ondergrond (plattegrond/kaart) binnen datzelfde kader uit, en zet dit op het klembord;
+   bij knippen worden de objecten verwijderd en wordt het uitgesneden stuk ondergrond dichtgeplakt */
+function copyAreaToClipboard(b, cut){
+  const sel=S.objects.filter(o=>{
+    if(o.type==='underlay'||o.type==='erase'||o.type==='mask') return false;
+    const ob=bboxOf(o);
+    return ob.x>=b.x-2 && ob.y>=b.y-2 && ob.x+ob.w<=b.x+b.w+2 && ob.y+ob.h<=b.y+b.h+2;
+  });
+  const oc=captureUnderlaySnippet(b);
+  if(!sel.length && !oc){
+    hint.textContent='Geen objecten of ondergrond binnen het kader — niets gekopieerd/geknipt.';
+    draw();
+    return;
   }
-  const img=new Image();
-  const o={id:idSeq++, type:'underlay', x:b.x+px(0.4), y:b.y+px(0.4),
-    w:b.w, h:b.h, rot:0, opacity:1, dataUrl};
-  img.onload=()=>{ o.img=img; draw(); };
-  img.src=dataUrl;
-  S.objects.push(o);
-  S.sel=o; setTool('select'); showProps(); updCount(); draw();
-  hint.textContent=(cut?'Uitgeknipt':'Gekopieerd')+' — versleep de uitsnede naar de gewenste plek. Ctrl+D dupliceert, R draait, hoekgreep schaalt.';
+  let bg=null;
+  if(oc){
+    const dataUrl=oc.toDataURL('image/png');
+    const img=new Image();
+    bg={x:b.x, y:b.y, w:b.w, h:b.h, rot:0, opacity:1, dataUrl, img};
+    img.onload=()=>draw();
+    img.src=dataUrl;
+  }
+  S.clipboard={x:b.x, y:b.y, bg, objs:sel.map(o=>{
+    const c=JSON.parse(JSON.stringify(o,(k,v)=>k==='img'?undefined:v));
+    if(o.type==='underlay') c.img=o.img;
+    return c;
+  })};
+  if(cut){
+    pushUndo();
+    S.objects=S.objects.filter(o=>!sel.includes(o));
+    if(oc){
+      S.objects.push({id:idSeq++, type:'erase', x:b.x, y:b.y, w:b.w, h:b.h, color:dominantColor(oc)});
+    }
+    updCount();
+  }
+  const n=sel.length+(oc?1:0);
+  S.sel=null; setTool('select'); showProps(); draw();
+  hint.textContent=(cut?'Geknipt':'Gekopieerd')+`: ${n} item(s) (${oc?'incl. ondergrond':'geen ondergrond'}) naar het klembord — kies "Plakken" (of Ctrl+V) om ze op de gewenste plek te zetten.`;
+}
+/* plakt het klembord met het opgeslagen kader-hoekpunt (S.clipboard.x/y) op wereldpositie (tx,ty) */
+function pasteClipboardAt(tx, ty){
+  if(!S.clipboard || (!S.clipboard.objs.length && !S.clipboard.bg)) return;
+  pushUndo();
+  const dx=tx-S.clipboard.x, dy=ty-S.clipboard.y;
+  let last=null;
+  if(S.clipboard.bg){
+    const bg=S.clipboard.bg;
+    const c={id:idSeq++, type:'underlay', x:bg.x+dx, y:bg.y+dy, w:bg.w, h:bg.h,
+      rot:bg.rot, opacity:bg.opacity, dataUrl:bg.dataUrl, img:bg.img};
+    S.objects.push(c);
+    last=c;
+  }
+  S.clipboard.objs.forEach(src=>{
+    const c=JSON.parse(JSON.stringify(src,(k,v)=>k==='img'?undefined:v));
+    c.id=idSeq++;
+    if(isSeg(c)){ c.x1+=dx; c.y1+=dy; c.x2+=dx; c.y2+=dy; }
+    else if(c.type==='pencil'||c.type==='mask'){ c.pts=c.pts.map(p=>({x:p.x+dx, y:p.y+dy})); }
+    else { c.x=(c.x||0)+dx; c.y=(c.y||0)+dy; }
+    if(src.type==='underlay') c.img=src.img;
+    S.objects.push(c);
+    last=c;
+  });
+  S.sel=last; showProps(); updCount(); draw();
+  const n=S.clipboard.objs.length+(S.clipboard.bg?1:0);
+  hint.textContent=`${n} item(s) geplakt.`;
 }
 
 /* ═════════ GUM ═════════ */
@@ -2008,6 +2115,7 @@ addEventListener('keydown', e=>{
   if(e.ctrlKey && e.key.toLowerCase()==='z'){ e.preventDefault(); undo(); return; }
   if(e.ctrlKey && (e.key.toLowerCase()==='y' || (e.shiftKey&&e.key.toLowerCase()==='z'))){ e.preventDefault(); redo(); return; }
   if(e.ctrlKey && e.key.toLowerCase()==='d'){ e.preventDefault(); dupSel(); return; }
+  if(e.ctrlKey && e.key.toLowerCase()==='v'){ e.preventDefault(); if(S.clipboard) pasteClipboardAt(S.mouse.wx, S.mouse.wy); return; }
   if(e.key==='Escape'){
     if(S.tool==='exportarea' && S.exportRect){ S.exportRect=null; showProps(); }
     cancelTemp(); S.sel=null; showProps(); draw();
@@ -2269,12 +2377,12 @@ function refreshProps(){ /* lichte refresh bij slepen: alleen bij muur lengte */
 const HINTS={
   select:'Klik = selecteren · sleep = verplaatsen · hoekgreep = schalen · eindpunt slepen + Ctrl = lijn verlengen langs dezelfde richting',
   pan:'Sleep om het beeld te verschuiven',
-  wall:'Klik = beginpunt · klik = volgend punt (kettingtekenen) · rechtermuisknop of Esc = stoppen · Shift = vrije hoek · "Vrije hand" onderin = slepen voor een handgetekende muur',
+  wall:'Klik = beginpunt · klik = volgend punt (kettingtekenen) · rechtermuisknop of Esc = stoppen · vrije hoek (360°) tenzij "Hoek snappen" aan staat, Shift keert dit tijdelijk om · "Vrije hand" onderin = slepen voor een handgetekende muur',
   erase:'Sleep een rechthoek: maskeert delen van de ondergelegen PDF (kleur instelbaar via selectie)',
   text:'Klik op de tekening en typ · Enter bevestigt · na plaatsing: hoekgreep = groter/kleiner',
   dim:'Klik beginpunt en eindpunt · toont maat in meters op basis van de schaal',
   calib:'Schaal instellen: klik 2 punten met bekende afstand op de tekening (bijv. een maatlijn op de PDF) en voer de meters in',
-  line:'Klik = punt · klik = volgend punt — haakse hoeken maak je vanzelf door de 45°/90°-snapping · rechtsklik of Esc = stoppen · Shift = vrije hoek · "Vrije hand" onderin = slepen voor een handgetekende lijn',
+  line:'Klik = punt · klik = volgend punt · rechtsklik of Esc = stoppen · vrije hoek (360°) tenzij "Hoek snappen" aan staat, Shift keert dit tijdelijk om · "Vrije hand" onderin = slepen voor een handgetekende lijn',
   pencil:'Sleep om uit de vrije hand te tekenen',
   rect:'Sleep om een rechthoek te tekenen',
   circle:'Sleep om een cirkel of ellips te tekenen',
@@ -2283,16 +2391,17 @@ const HINTS={
   fill:'Sleep een rechthoek die gevuld wordt met de statuskleur — bijv. zwart om een muuropening dicht te zetten · eigen kleur via selectie',
   wbdbo:'Sleep langs de scheidingsconstructie · aantal minuten instelbaar via selectie',
   exitroute:'Klik = punt · klik = volgend punt — tekent de vluchtroute als groene pijlen · rechtsklik of Esc = stoppen',
-  copyarea:'Sleep een kader om dat gedeelte te kopiëren · de kopie wordt als losse uitsnede geplaatst die je kunt verslepen, draaien en schalen',
-  cutarea:'Sleep een kader om dat gedeelte te knippen · het origineel wordt afgedekt met de achtergrondkleur en de uitsnede kun je verplaatsen',
+  copyarea:'Sleep een kader: objecten die er volledig binnen vallen én het uitgesneden stuk ondergrond (plattegrond/kaart) gaan naar het klembord · gebruik daarna "Plakken" of Ctrl+V',
+  cutarea:'Sleep een kader: objecten die er volledig binnen vallen én het uitgesneden stuk ondergrond (plattegrond/kaart) gaan naar het klembord en worden verwijderd (het gat wordt dichtgeplakt) · gebruik daarna "Plakken" of Ctrl+V',
   exportarea:'Sleep een kader om het gedeelte aan te geven dat je wilt opslaan of afdrukken · Esc wist het kader',
   stairsQuarter:'Klik om kwartslagtrap te plaatsen · R = draaien · hoekgreep = schalen',
   stairsHalf:'Klik om halfslagtrap te plaatsen · R = draaien · hoekgreep = schalen',
   stairsDouble:'Klik om dubbelkwarttrap te plaatsen · R = draaien · hoekgreep = schalen',
   spiral:'Klik om wenteltrap te plaatsen · diameter, treden en draaiing instelbaar via selectie · R = draaien',
   exitroute:'Klik = punt · klik = volgend punt — groene vluchtroute met pijl per segment · rechtsklik of Esc = stoppen',
-  copyarea:'Sleep een kader om dat gedeelte te kopiëren — de kopie wordt een verplaatsbare, draaibare en schaalbare uitsnede',
-  cutarea:'Sleep een kader om dat gedeelte te knippen — het origineel wordt afgedekt met de achtergrondkleur en de uitsnede kun je verplaatsen',
+  copyarea:'Sleep een kader: objecten die er volledig binnen vallen én het uitgesneden stuk ondergrond (plattegrond/kaart) gaan naar het klembord — gebruik daarna "Plakken" of Ctrl+V',
+  cutarea:'Sleep een kader: objecten die er volledig binnen vallen én het uitgesneden stuk ondergrond (plattegrond/kaart) gaan naar het klembord en worden verwijderd (het gat wordt dichtgeplakt) — gebruik daarna "Plakken" of Ctrl+V',
+  pastearea:'Klik op de tekening om de klembord-inhoud daar te plaatsen · blijft actief voor meerdere plaklocaties · Ctrl+V plakt direct op de huidige muispositie',
   exportarea:'Sleep een kader over het gedeelte dat je wilt opslaan of afdrukken · Esc of het paneel rechts wist het kader',
   stairsQuarter:'Klik om kwartslagtrap te plaatsen · breedte/diepte instelbaar via selectie · R = draaien',
   stairsHalf:'Klik om halfslagtrap te plaatsen · breedte/diepte instelbaar via selectie · R = draaien',
@@ -2589,6 +2698,7 @@ document.getElementById('stGrid').addEventListener('change', e=>{ S.grid=e.targe
 document.getElementById('stGridTop').addEventListener('change', e=>{ S.gridTop=e.target.checked; draw(); });
 document.getElementById('stSnap').addEventListener('change', e=>{ S.snap=e.target.checked; });
 document.getElementById('stFreehand').addEventListener('change', e=>{ S.freehand=e.target.checked; cancelTemp(); });
+document.getElementById('stAngleSnap').addEventListener('change', e=>{ S.angleSnap=e.target.checked; });
 document.getElementById('stZoomIn').onclick=()=>zoomCenter(1.2);
 document.getElementById('stZoomOut').onclick=()=>zoomCenter(1/1.2);
 function zoomCenter(f){
