@@ -6,6 +6,7 @@
 <title>PlanTekenaar — 2D Plattegrond Editor</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="geometry.js"></script>
 <style>
   :root{
     --chrome:#23272C; --chrome2:#2B3036; --chrome3:#343A41; --line:#3E454D;
@@ -190,6 +191,7 @@
     <button class="tool" data-t="circle"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="8" ry="6"/></svg>Cirkel</button>
     <button class="tool" data-t="arrow"><svg viewBox="0 0 24 24"><path d="M4 20L18 6M18 6h-6M18 6v6"/></svg>Pijl</button>
     <button class="tool" data-t="gum"><svg viewBox="0 0 24 24"><path d="M8 20H5L3 18a2 2 0 010-3L13 5a2 2 0 013 0l5 5a2 2 0 010 3l-7 7H8z"/><path d="M9 9l7 7"/></svg>Gum</button>
+    <button class="tool" data-t="trim" title="Sneltoets: T"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><path d="M20 5L7.6 17.4M20 19L4 6"/></svg>Trimmen</button>
     <button class="tool" data-t="fill"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="1" fill="currentColor" stroke="none" opacity=".85"/></svg>Vlak (vulling)</button>
     <button class="tool" data-t="copyarea"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="1"/><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"/></svg>Kopiëren</button>
     <button class="tool" data-t="cutarea"><svg viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.5"/><circle cx="6" cy="6" r="2.5"/><path d="M8 7.5L20 18M8 16.5L20 6"/></svg>Knippen</button>
@@ -315,6 +317,7 @@
   <label><input id="stSnap" type="checkbox" checked> Snappen</label>
   <label title="Sleep met ingedrukte muisknop om een muur of lijn uit de vrije hand te tekenen (i.p.v. klik-klik rechte segmenten)"><input id="stFreehand" type="checkbox"> Vrije hand (muur/lijn)</label>
   <label title="Klikt de hoek van muur/lijn vast op stappen van 45° (0°, 45°, 90°, ...). Shift keert dit tijdelijk om."><input id="stAngleSnap" type="checkbox"> Hoek snappen (45°)</label>
+  <label title="Trim-tool: snijd ook op het denkbeeldige verlengde van een snijrand, niet alleen op werkelijke snijpunten"><input id="stTrimExtend" type="checkbox"> Extend-modus (trim)</label>
   <span class="grow"></span>
   <span id="stCount">0 objecten</span>
   <button id="stZoomOut">−</button>
@@ -364,6 +367,11 @@ const S = {
   scaleByMode: {bouw: 50, kaart: 3779.53/1000},
   grid: true, snap: true, freehand: false, angleSnap: false,
   clipboard: null,        // {x,y,objs:[...]} — via Kopiëren/Knippen gevuld, via Plakken/Ctrl+V geplaatst
+  trimEdges: new Set(),   // ids van geselecteerde snijranden (stap 1 van de trim-tool)
+  trimExtend: false,      // trim ook op het denkbeeldige verlengde van een snijrand
+  trimPhase: 'edges',     // 'edges' = snijranden kiezen · 'targets' = objecten trimmen/extenden
+  trimHover: null,        // {kind:'trim'|'extend', pieces:[...]} — voorvertoning onder de cursor
+  trimPending: null,      // 'fence' | 'crossing' | null — gewapend via F/C, verbruikt bij volgende sleep
   mouse: {x:0, y:0, wx:0, wy:0, down:false},
   temp: null,             // tool-in-uitvoering (muur/witvlak/maatlijn)
   drag: null,             // sleepstatus
@@ -504,10 +512,13 @@ function draw(){
   const order = t => LAYER[t] ?? 4;
   const objs=[...S.objects].sort((a,b)=>order(a.type)-order(b.type));
   let gridPending = S.grid && S.gridTop;
+  let wallJointsPending = true;
   for(const o of objs){
     if(gridPending && order(o.type)>=2){ drawGrid(vw); gridPending=false; }
+    if(wallJointsPending && order(o.type)>3){ drawWallJoints(); wallJointsPending=false; }
     drawObj(o);
   }
+  if(wallJointsPending) drawWallJoints();
   if(gridPending) drawGrid(vw);
 
   if(S.exportRect){
@@ -524,6 +535,7 @@ function draw(){
 
   if(S.temp) drawTemp();
   if(S.sel) drawSelection(S.sel);
+  if(S.tool==='trim' || S.trimHover) drawTrimOverlay();
   if(S.tool==='gum' && !S.hideGumCursor){
     const r=S.gum ? S.gum.r : S.gumSize/S.zoom;
     ctx.save();
@@ -596,6 +608,35 @@ function drawWall(o){
   ctx.beginPath(); ctx.moveTo(o.x1,o.y1); ctx.lineTo(o.x2,o.y2); ctx.stroke();
   ctx.restore();
 }
+/* muren worden los van elkaar getekend met rechte (butt) uiteinden; bij een hoek die niet
+   precies haaks uitkomt blijft er dan een klein gaatje/randje zichtbaar. Dit vult elke plek waar
+   ≥2 muur-uiteinden samenkomen op met een rondje ter grootte van de muurdikte, ongeacht de hoek. */
+function drawWallJoints(){
+  const walls=S.objects.filter(o=>o.type==='wall');
+  if(walls.length<2) return;
+  const pts=[];
+  walls.forEach(w=>{
+    pts.push({x:w.x1,y:w.y1, th:w.th||8, state:w.state, color:w.customColor});
+    pts.push({x:w.x2,y:w.y2, th:w.th||8, state:w.state, color:w.customColor});
+  });
+  const EPS=0.5, used=new Array(pts.length).fill(false);
+  const prio={slopen:2, nieuw:1, bestaand:0};
+  for(let i=0;i<pts.length;i++){
+    if(used[i]) continue;
+    const cluster=[pts[i]]; used[i]=true;
+    for(let j=i+1;j<pts.length;j++){
+      if(used[j]) continue;
+      if(Math.hypot(pts[j].x-pts[i].x, pts[j].y-pts[i].y)<EPS){ cluster.push(pts[j]); used[j]=true; }
+    }
+    if(cluster.length<2) continue;
+    const maxTh=Math.max(...cluster.map(p=>p.th));
+    const lead=cluster.reduce((a,b)=>(prio[b.state]||0)>(prio[a.state]||0)?b:a);
+    ctx.save();
+    ctx.fillStyle=lead.color || stateColor(lead.state);
+    ctx.beginPath(); ctx.arc(cluster[0].x, cluster[0].y, maxTh/2+0.6, 0, 7); ctx.fill();
+    ctx.restore();
+  }
+}
 
 function applyStroke(o){
   ctx.strokeStyle=o.customColor || stateColor(o.state);
@@ -636,7 +677,8 @@ function drawRectShape(o){
 function drawCircleShape(o){
   ctx.save(); applyStroke(o);
   ctx.beginPath();
-  ctx.ellipse(o.x,o.y,Math.max(1,Math.abs(o.rx)),Math.max(1,Math.abs(o.ry)),0,0,7);
+  ctx.ellipse(o.x,o.y,Math.max(1,Math.abs(o.rx)),Math.max(1,Math.abs(o.ry)),0,
+    o.a0!==undefined?o.a0:0, o.a0!==undefined?o.a0+o.aSpan:7);
   ctx.stroke(); ctx.restore();
 }
 function drawMask(o){
@@ -1326,6 +1368,15 @@ function drawTemp(){
       rx:Math.abs(t.x2-t.x1)/2, ry:Math.abs(t.y2-t.y1)/2, th:t.th, state:S.lineState});
     ctx.globalAlpha=1;
   }
+  if(t.kind==='trimFence'){
+    ctx.strokeStyle='#D62828'; ctx.lineWidth=2/S.zoom; ctx.setLineDash([6/S.zoom,4/S.zoom]);
+    ctx.beginPath(); ctx.moveTo(t.x1,t.y1); ctx.lineTo(t.x2,t.y2); ctx.stroke(); ctx.setLineDash([]);
+  }
+  if(t.kind==='trimCrossing'){
+    ctx.strokeStyle='#D62828'; ctx.lineWidth=1.4/S.zoom; ctx.setLineDash([6/S.zoom,4/S.zoom]);
+    ctx.strokeRect(Math.min(t.x1,t.x2),Math.min(t.y1,t.y2),Math.abs(t.x2-t.x1),Math.abs(t.y2-t.y1));
+    ctx.setLineDash([]);
+  }
   if(t.kind==='calib'){
     ctx.strokeStyle='#0B8A42'; ctx.fillStyle='#0B8A42'; ctx.lineWidth=2/S.zoom;
     ctx.beginPath(); ctx.moveTo(t.x1,t.y1); ctx.lineTo(t.x2,t.y2); ctx.stroke();
@@ -1388,7 +1439,8 @@ function hit(wx,wy){
     }
     else if(o.type==='circle'){
       const v=Math.hypot((wx-o.x)/Math.max(1,o.rx),(wy-o.y)/Math.max(1,o.ry));
-      if(Math.abs(v-1)*Math.min(o.rx,o.ry) <= (o.th||2)/2+tol) return o;
+      const onArc = o.a0===undefined || PTGeom.angleInRange(Math.atan2(wy-o.y,wx-o.x), o.a0, o.aSpan);
+      if(onArc && Math.abs(v-1)*Math.min(o.rx,o.ry) <= (o.th||2)/2+tol) return o;
     }
     else { const b=bboxOf(o);
       if(wx>=b.x && wx<=b.x+b.w && wy>=b.y && wy<=b.y+b.h) return o; }
@@ -1407,7 +1459,14 @@ cv.addEventListener('mousedown', e=>{
   S.mouse={...S.mouse, x:sx, y:sy, wx:w.x, wy:w.y, down:true};
 
   if(e.button===1 || S.tool==='pan'){ lastPan={sx,sy}; return; }
-  if(e.button===2){ cancelTemp(); return; }
+  if(e.button===2){
+    if(S.tool==='trim'){
+      if(S.trimPending){ S.trimPending=null; hint.textContent='Fence/crossing geannuleerd.'; return; }
+      if(S.trimPhase==='edges') confirmTrimEdges(); else setTool('select');
+      return;
+    }
+    cancelTemp(); return;
+  }
 
   const wp = snapPt(w);
 
@@ -1479,6 +1538,14 @@ cv.addEventListener('mousedown', e=>{
       if(S.clipboard) pasteClipboardAt(snapPt(w).x, snapPt(w).y);
       else hint.textContent='Klembord is leeg — kopieer of knip eerst een gebied.';
       break;
+    case 'trim': {
+      if(S.trimPending){
+        S.temp={kind: S.trimPending==='fence'?'trimFence':'trimCrossing', x1:w.x,y1:w.y,x2:w.x,y2:w.y};
+        break;
+      }
+      trimAt(w.x, w.y, e.shiftKey);
+      break;
+    }
     case 'exportarea': S.temp={kind:'exportarea', x1:wp.x,y1:wp.y,x2:wp.x,y2:wp.y}; break;
     case 'wbdbo':
       S.temp={kind:'wbdbo', x1:wp.x, y1:wp.y, x2:wp.x, y2:wp.y}; break;
@@ -1606,10 +1673,16 @@ cv.addEventListener('mousemove', e=>{
     } else if(t.kind==='wallFree' || t.kind==='lineFree'){
       const lp=t.pts[t.pts.length-1];
       if(Math.hypot(w.x-lp.x, w.y-lp.y) > 4/S.zoom) t.pts.push({x:w.x, y:w.y});
+    } else if(t.kind==='trimFence' || t.kind==='trimCrossing'){
+      t.x2=w.x; t.y2=w.y;
     } else {
       const sp=snapPt(w);
       t.x2=sp.x; t.y2=sp.y;
     }
+    draw();
+  }
+  if(S.tool==='trim' && !S.temp){
+    S.trimHover=computeTrimHoverAt(w.x, w.y, e.shiftKey);
     draw();
   }
 });
@@ -1621,6 +1694,18 @@ addEventListener('mouseup', ()=>{
   if(S.gum){ S.gum=null; updCount(); draw(); }
   if(!S.temp) return;
   const t=S.temp;
+  if(t.kind==='trimFence'){
+    S.temp=null; S.trimPending=null;
+    if(Math.hypot(t.x2-t.x1,t.y2-t.y1)>3) trimFenceRun({x:t.x1,y:t.y1},{x:t.x2,y:t.y2});
+    else draw();
+    return;
+  }
+  if(t.kind==='trimCrossing'){
+    S.temp=null; S.trimPending=null;
+    const b={x:Math.min(t.x1,t.x2), y:Math.min(t.y1,t.y2), w:Math.abs(t.x2-t.x1), h:Math.abs(t.y2-t.y1)};
+    if(b.w>4 && b.h>4) trimCrossingRun(b); else draw();
+    return;
+  }
   if(t.kind==='erase'){
     if(Math.abs(t.x2-t.x1)>4 && Math.abs(t.y2-t.y1)>4){
       pushUndo();
@@ -2022,6 +2107,342 @@ function eraseVectorsAt(c, r){
   if(changed){ showProps(); updCount(); }
 }
 
+/* ═════════ TRIM ═════════
+   UI-orkestratie rond PTGeom (geometry.js). Elke trim/extend-functie hieronder werkt op
+   platte object-data en geeft een resultaat-descriptor terug: {ok, removeIds, addObjs, message, preview}.
+   De aanroeper (applyTrimResult / trimFenceRun / trimCrossingRun) past dat toe op S.objects. */
+const TRIM_TYPES = new Set(['wall','line','arrow','exitroute','wbdbo','pencil','rect','circle']);
+function trimEligible(o){ return TRIM_TYPES.has(o.type); }
+
+/* geometrie-descriptor(en) van een object t.b.v. PTGeom (kale punten/ellipsen, geen app-specifieke velden) */
+function trimGeomsOf(o){
+  if(o.type==='rect'){
+    return [
+      {kind:'seg', p1:{x:o.x,y:o.y},         p2:{x:o.x+o.w,y:o.y}},
+      {kind:'seg', p1:{x:o.x+o.w,y:o.y},     p2:{x:o.x+o.w,y:o.y+o.h}},
+      {kind:'seg', p1:{x:o.x+o.w,y:o.y+o.h}, p2:{x:o.x,y:o.y+o.h}},
+      {kind:'seg', p1:{x:o.x,y:o.y+o.h},     p2:{x:o.x,y:o.y}},
+    ];
+  }
+  if(o.type==='circle') return [{kind:'arc', cx:o.x, cy:o.y, rx:o.rx, ry:o.ry, a0:o.a0, aSpan:o.aSpan}];
+  if(o.type==='pencil'){
+    const segs=[];
+    for(let i=1;i<o.pts.length;i++) segs.push({kind:'seg', p1:o.pts[i-1], p2:o.pts[i]});
+    return segs;
+  }
+  if(isSeg(o)) return [{kind:'seg', p1:{x:o.x1,y:o.y1}, p2:{x:o.x2,y:o.y2}}];
+  return [];
+}
+
+/* alle snij-parameters (t voor een segment, hoek voor een boog) van geom tegen een lijst edge-geometrieën */
+function cutParamsAgainstEdges(geom, edgeGeoms, extend){
+  const out=[];
+  for(const eg of edgeGeoms){
+    if(geom.kind==='seg' && eg.kind==='seg'){
+      const p=PTGeom.segSeg(geom.p1,geom.p2, eg.p1,eg.p2, false, extend);
+      if(p) out.push(p.t);
+    } else if(geom.kind==='seg' && eg.kind==='arc'){
+      const pts=PTGeom.segEllipse(geom.p1,geom.p2, eg.cx,eg.cy,eg.rx,eg.ry, false);
+      for(const p of pts){
+        if(eg.a0===undefined || PTGeom.angleInRange(PTGeom.angleOnEllipse(p,eg.cx,eg.cy,eg.rx,eg.ry), eg.a0, eg.aSpan))
+          out.push(p.t);
+      }
+    } else if(geom.kind==='arc' && eg.kind==='seg'){
+      const pts=PTGeom.segEllipse(eg.p1,eg.p2, geom.cx,geom.cy,geom.rx,geom.ry, extend);
+      for(const p of pts) out.push(PTGeom.angleOnEllipse(p,geom.cx,geom.cy,geom.rx,geom.ry));
+    } else if(geom.kind==='arc' && eg.kind==='arc'){
+      // alleen echte cirkels (rx≈ry) — algemene ellips-ellips is bewust buiten scope
+      if(Math.abs(geom.rx-geom.ry)<1e-3 && Math.abs(eg.rx-eg.ry)<1e-3){
+        const pts=PTGeom.circleCircle(geom.cx,geom.cy,geom.rx, eg.cx,eg.cy,eg.rx);
+        for(const p of pts){
+          const inEdge = eg.a0===undefined || PTGeom.angleInRange(PTGeom.angleOnEllipse(p,eg.cx,eg.cy,eg.rx,eg.ry), eg.a0, eg.aSpan);
+          if(inEdge) out.push(PTGeom.angleOnEllipse(p,geom.cx,geom.cy,geom.rx,geom.ry));
+        }
+      }
+    }
+  }
+  return out;
+}
+
+const TRIM_MINLEN=3, TRIM_MINSPAN=0.01;
+
+function trimSegmentGeneric(o, clickPt, edgeObjs, extend){
+  const p1={x:o.x1,y:o.y1}, p2={x:o.x2,y:o.y2};
+  const edgeGeoms=edgeObjs.flatMap(trimGeomsOf);
+  const ts=PTGeom.dedupeSorted(cutParamsAgainstEdges({kind:'seg',p1,p2}, edgeGeoms, extend)
+    .filter(t=>t>-0.001 && t<1.001), 1e-4);
+  const clickT=PTGeom.paramOnSeg(clickPt, p1, p2);
+  const br=PTGeom.bracketLinear(clickT, ts);
+  if(br.lo===undefined && br.hi===undefined) return {ok:false, message:'Geen snijpunt gevonden om op te trimmen.'};
+  const at=t=>PTGeom.pointAtParam(p1,p2,t);
+  const mk=(t0,t1)=>({...o, id:idSeq++, x1:at(t0).x,y1:at(t0).y, x2:at(t1).x,y2:at(t1).y});
+  const pieces=[];
+  if(br.lo!==undefined){ const s=mk(0,br.lo); if(Math.hypot(s.x2-s.x1,s.y2-s.y1)>TRIM_MINLEN) pieces.push(s); }
+  if(br.hi!==undefined){ const s=mk(br.hi,1); if(Math.hypot(s.x2-s.x1,s.y2-s.y1)>TRIM_MINLEN) pieces.push(s); }
+  const preview={kind:'seg', p1:at(br.lo??0), p2:at(br.hi??1)};
+  return {ok:true, removeIds:[o.id], addObjs:pieces, preview};
+}
+
+function extendSegmentGeneric(o, clickPt, edgeObjs, extend){
+  const p1={x:o.x1,y:o.y1}, p2={x:o.x2,y:o.y2};
+  const d1=Math.hypot(clickPt.x-p1.x,clickPt.y-p1.y), d2=Math.hypot(clickPt.x-p2.x,clickPt.y-p2.y);
+  const movingIsP1 = d1<d2;
+  const fixed=movingIsP1?p2:p1, moving=movingIsP1?p1:p2;
+  const edgeGeoms=edgeObjs.flatMap(trimGeomsOf);
+  let bestT=Infinity;
+  for(const eg of edgeGeoms){
+    if(eg.kind==='seg'){
+      const p=PTGeom.segSeg(fixed, moving, eg.p1, eg.p2, true, extend);
+      if(p && p.t>1.001 && p.t<bestT) bestT=p.t;
+    } else if(eg.kind==='arc'){
+      const pts=PTGeom.segEllipse(fixed, moving, eg.cx,eg.cy,eg.rx,eg.ry, true);
+      for(const p of pts){
+        if(eg.a0!==undefined && !PTGeom.angleInRange(PTGeom.angleOnEllipse(p,eg.cx,eg.cy,eg.rx,eg.ry), eg.a0, eg.aSpan)) continue;
+        if(p.t>1.001 && p.t<bestT) bestT=p.t;
+      }
+    }
+  }
+  if(!isFinite(bestT)) return {ok:false, message:'Geen snijrand gevonden om naar toe te verlengen.'};
+  const np={x:fixed.x+(moving.x-fixed.x)*bestT, y:fixed.y+(moving.y-fixed.y)*bestT};
+  const c={...o, id:idSeq++};
+  if(movingIsP1){ c.x1=np.x; c.y1=np.y; } else { c.x2=np.x; c.y2=np.y; }
+  return {ok:true, removeIds:[o.id], addObjs:[c], preview:{kind:'seg', p1:moving, p2:np}};
+}
+
+function trimCircleObj(o, clickPt, edgeObjs, extend){
+  const edgeGeoms=edgeObjs.flatMap(trimGeomsOf);
+  const rawAngles=cutParamsAgainstEdges({kind:'arc',cx:o.x,cy:o.y,rx:o.rx,ry:o.ry,a0:o.a0,aSpan:o.aSpan}, edgeGeoms, extend);
+  const clickAngle=PTGeom.angleOnEllipse(clickPt, o.x,o.y,o.rx,o.ry);
+  const mk=(a0,aSpan)=>({...o, id:idSeq++, a0:PTGeom.normAngle(a0), aSpan});
+  if(o.a0===undefined){
+    const angles=PTGeom.dedupeSorted(rawAngles.map(PTGeom.normAngle), 1e-4);
+    const br=PTGeom.bracketCircular(clickAngle, angles);
+    if(!br) return {ok:false, message:'Onvoldoende snijpunten om deze cirkel te trimmen.'};
+    const keepSpan=PTGeom.normAngle(br.lo-br.hi);
+    if(keepSpan<TRIM_MINSPAN) return {ok:false, message:'Niets over om te bewaren op dit punt.'};
+    const preview={kind:'arc', cx:o.x,cy:o.y,rx:o.rx,ry:o.ry, a0:br.lo, aSpan:br.hiAdj-br.lo};
+    return {ok:true, removeIds:[o.id], addObjs:[mk(br.hi, keepSpan)], preview};
+  }
+  const local=rawAngles.filter(a=>PTGeom.angleInRange(a,o.a0,o.aSpan)).map(a=>PTGeom.normAngle(a-o.a0));
+  const clickLocal=PTGeom.normAngle(clickAngle-o.a0);
+  const br=PTGeom.bracketLinear(clickLocal, local);
+  if(br.lo===undefined && br.hi===undefined) return {ok:false, message:'Geen snijpunt op dit deel van de boog.'};
+  const pieces=[];
+  if(br.lo!==undefined && br.lo>TRIM_MINSPAN) pieces.push(mk(o.a0, br.lo));
+  if(br.hi!==undefined && (o.aSpan-br.hi)>TRIM_MINSPAN) pieces.push(mk(o.a0+br.hi, o.aSpan-br.hi));
+  const preview={kind:'arc', cx:o.x,cy:o.y,rx:o.rx,ry:o.ry, a0:o.a0+(br.lo??0), aSpan:(br.hi??o.aSpan)-(br.lo??0)};
+  return {ok:true, removeIds:[o.id], addObjs:pieces, preview};
+}
+
+function trimPencilObj(o, clickPt, edgeObjs, extend){
+  const pts=o.pts;
+  if(pts.length<2) return {ok:false, message:'Potloodlijn te kort.'};
+  let bestI=0, bestD=Infinity;
+  for(let i=1;i<pts.length;i++){
+    const d=distSeg(clickPt.x,clickPt.y, pts[i-1].x,pts[i-1].y, pts[i].x,pts[i].y);
+    if(d<bestD){ bestD=d; bestI=i; }
+  }
+  let lenToStart=0; for(let i=1;i<=bestI;i++) lenToStart+=Math.hypot(pts[i].x-pts[i-1].x,pts[i].y-pts[i-1].y);
+  let lenTotal=0; for(let i=1;i<pts.length;i++) lenTotal+=Math.hypot(pts[i].x-pts[i-1].x,pts[i].y-pts[i-1].y);
+  const fromStart = lenToStart <= lenTotal-lenToStart;
+  const walk = fromStart ? pts : [...pts].reverse();
+  const edgeGeoms=edgeObjs.flatMap(trimGeomsOf);
+  for(let i=1;i<walk.length;i++){
+    const p1=walk[i-1], p2=walk[i];
+    const ts=cutParamsAgainstEdges({kind:'seg',p1,p2}, edgeGeoms, extend).filter(t=>t>=-0.001 && t<=1.001);
+    if(ts.length){
+      const t=Math.max(0,Math.min(1, Math.min(...ts)));
+      const cut={x:p1.x+(p2.x-p1.x)*t, y:p1.y+(p2.y-p1.y)*t};
+      const preview={kind:'poly', pts:[...walk.slice(0,i), cut]};
+      const kept=[cut, ...walk.slice(i)];
+      if(kept.length<2) return {ok:true, removeIds:[o.id], addObjs:[], preview};
+      return {ok:true, removeIds:[o.id], addObjs:[{...o, id:idSeq++, pts:kept}], preview};
+    }
+  }
+  return {ok:false, message:'Geen snijpunt gevonden op deze potloodlijn.'};
+}
+
+/* een rechthoek heeft geen "randgeometrie"-eigen object; bij trimmen/extenden explodeert hij naar
+   4 losse lijnen (zoals AutoCAD een rechthoekige polylijn ook per zijde behandelt) */
+function rectExplode(o){
+  const edges=[
+    {x1:o.x,y1:o.y,x2:o.x+o.w,y2:o.y},
+    {x1:o.x+o.w,y1:o.y,x2:o.x+o.w,y2:o.y+o.h},
+    {x1:o.x+o.w,y1:o.y+o.h,x2:o.x,y2:o.y+o.h},
+    {x1:o.x,y1:o.y+o.h,x2:o.x,y2:o.y},
+  ];
+  return edges.map(e=>({id:idSeq++, type:'line', x1:e.x1,y1:e.y1,x2:e.x2,y2:e.y2, th:o.th, state:o.state}));
+}
+function nearestEdgeIdx(clickPt, lines){
+  let bestI=0, bestD=Infinity;
+  lines.forEach((l,i)=>{ const d=distSeg(clickPt.x,clickPt.y,l.x1,l.y1,l.x2,l.y2); if(d<bestD){bestD=d;bestI=i;} });
+  return bestI;
+}
+function trimRectObj(o, clickPt, edgeObjs, extend){
+  const lines=rectExplode(o);
+  const bestI=nearestEdgeIdx(clickPt, lines);
+  const res=trimSegmentGeneric(lines[bestI], clickPt, edgeObjs, extend);
+  if(!res.ok) return res;
+  const keep=lines.filter((l,i)=>i!==bestI);
+  return {ok:true, removeIds:[o.id], addObjs:[...keep, ...res.addObjs], preview:res.preview};
+}
+function extendRectObj(o, clickPt, edgeObjs, extend){
+  const lines=rectExplode(o);
+  const bestI=nearestEdgeIdx(clickPt, lines);
+  const res=extendSegmentGeneric(lines[bestI], clickPt, edgeObjs, extend);
+  if(!res.ok) return res;
+  const keep=lines.filter((l,i)=>i!==bestI);
+  return {ok:true, removeIds:[o.id], addObjs:[...keep, ...res.addObjs], preview:res.preview};
+}
+
+function trimDispatch(o, clickPt, edgeObjs, extend, wantExtend){
+  const others=edgeObjs.filter(e=>e.id!==o.id);
+  if(o.type==='circle') return wantExtend
+    ? {ok:false, message:'Verlengen is niet van toepassing op een cirkel/boog.'}
+    : trimCircleObj(o, clickPt, others, extend);
+  if(o.type==='pencil') return wantExtend
+    ? {ok:false, message:'Verlengen is niet ondersteund voor een potloodlijn.'}
+    : trimPencilObj(o, clickPt, others, extend);
+  if(o.type==='rect') return wantExtend ? extendRectObj(o, clickPt, others, extend) : trimRectObj(o, clickPt, others, extend);
+  if(isSeg(o)) return wantExtend ? extendSegmentGeneric(o, clickPt, others, extend) : trimSegmentGeneric(o, clickPt, others, extend);
+  return {ok:false, message:'Dit objecttype kan niet worden getrimd.'};
+}
+
+function resolveCuttingEdges(){
+  if(S.trimEdges.size) return S.objects.filter(o=>S.trimEdges.has(o.id));
+  return S.objects.filter(trimEligible);
+}
+function confirmTrimEdges(){
+  if(!S.trimEdges.size) S.objects.filter(trimEligible).forEach(o=>S.trimEdges.add(o.id));
+  S.trimPhase='targets';
+  hint.textContent=`${S.trimEdges.size} snijrand(en) actief — klik het te verwijderen deel (Shift+klik = verlengen) · F/C = fence/crossing · U = ongedaan · Esc = sluiten.`;
+  draw();
+}
+function applyTrimResult(res){
+  if(!res.ok){ hint.textContent=res.message||'Trim mislukt.'; return false; }
+  pushUndo();
+  const rm=new Set(res.removeIds);
+  S.objects=S.objects.filter(o=>!rm.has(o.id));
+  res.addObjs.forEach(o=>S.objects.push(o));
+  updCount(); draw();
+  return true;
+}
+function trimAt(wx, wy, wantExtend){
+  if(S.trimPhase==='edges'){
+    const o=hit(wx,wy);
+    if(o && trimEligible(o)){
+      if(S.trimEdges.has(o.id)) S.trimEdges.delete(o.id); else S.trimEdges.add(o.id);
+      hint.textContent=`${S.trimEdges.size} snijrand(en) geselecteerd — klik verder, of klik in lege ruimte / Enter om te bevestigen.`;
+      draw();
+    } else confirmTrimEdges();
+    return;
+  }
+  const o=hit(wx,wy);
+  if(!o || !trimEligible(o)){ hint.textContent='Geen trimbaar object op dat punt.'; return; }
+  const edges=resolveCuttingEdges();
+  const res=trimDispatch(o, {x:wx,y:wy}, edges, S.trimExtend, wantExtend);
+  applyTrimResult(res);
+  if(res.ok) hint.textContent = wantExtend?'Object verlengd.':'Object getrimd.';
+}
+function batchTrimByEffectivePoints(effective /* Map(obj -> point) */){
+  const edges=resolveCuttingEdges();
+  const ops=[];
+  for(const [o, pt] of effective){
+    const res=trimDispatch(o, pt, edges, S.trimExtend, false);
+    if(res.ok) ops.push(res);
+  }
+  if(!ops.length) return 0;
+  pushUndo();
+  const rm=new Set(); const add=[];
+  ops.forEach(r=>{ r.removeIds.forEach(id=>rm.add(id)); add.push(...r.addObjs); });
+  S.objects=S.objects.filter(o=>!rm.has(o.id));
+  add.forEach(o=>S.objects.push(o));
+  updCount(); draw();
+  return ops.length;
+}
+function firstCrossPoint(geoms, ref1, ref2){
+  for(const g of geoms){
+    if(g.kind==='seg'){
+      const p=PTGeom.segSeg(ref1,ref2, g.p1,g.p2, false, false);
+      if(p) return {x:p.x,y:p.y};
+    } else {
+      const pts=PTGeom.segEllipse(ref1,ref2, g.cx,g.cy,g.rx,g.ry, false);
+      const valid=pts.find(p=>g.a0===undefined || PTGeom.angleInRange(PTGeom.angleOnEllipse(p,g.cx,g.cy,g.rx,g.ry), g.a0, g.aSpan));
+      if(valid) return valid;
+    }
+  }
+  return null;
+}
+function trimFenceRun(f1, f2){
+  const effective=new Map();
+  for(const o of S.objects){
+    if(!trimEligible(o)) continue;
+    const pt=firstCrossPoint(trimGeomsOf(o), f1, f2);
+    if(pt) effective.set(o, pt);
+  }
+  const n=batchTrimByEffectivePoints(effective);
+  hint.textContent = n ? `Fence: ${n} object(en) getrimd.` : 'De fence kruiste geen trimbare objecten met een geldig snijpunt.';
+  if(!n) draw();
+}
+function trimCrossingRun(b){
+  const edges4=[
+    {kind:'seg', p1:{x:b.x,y:b.y}, p2:{x:b.x+b.w,y:b.y}},
+    {kind:'seg', p1:{x:b.x+b.w,y:b.y}, p2:{x:b.x+b.w,y:b.y+b.h}},
+    {kind:'seg', p1:{x:b.x+b.w,y:b.y+b.h}, p2:{x:b.x,y:b.y+b.h}},
+    {kind:'seg', p1:{x:b.x,y:b.y+b.h}, p2:{x:b.x,y:b.y}},
+  ];
+  const effective=new Map();
+  for(const o of S.objects){
+    if(!trimEligible(o)) continue;
+    let found=null;
+    for(const re of edges4){ found=firstCrossPoint(trimGeomsOf(o), re.p1, re.p2); if(found) break; }
+    if(found) effective.set(o, found);
+  }
+  const n=batchTrimByEffectivePoints(effective);
+  hint.textContent = n ? `Crossing: ${n} object(en) getrimd.` : 'Geen trimbare objecten kruisen dit selectiekader.';
+  if(!n) draw();
+}
+function computeTrimHoverAt(wx, wy, wantExtend){
+  if(S.tool!=='trim' || S.trimPhase!=='targets') return null;
+  const o=hit(wx,wy);
+  if(!o || !trimEligible(o)) return null;
+  const edges=resolveCuttingEdges();
+  const res=trimDispatch(o, {x:wx,y:wy}, edges, S.trimExtend, wantExtend);
+  if(!res.ok || !res.preview) return null;
+  return {mode: wantExtend?'extend':'trim', preview:res.preview};
+}
+function drawTrimOverlay(){
+  ctx.save();
+  if(S.tool==='trim'){
+    ctx.strokeStyle='#3D9BE9'; ctx.globalAlpha=.85; ctx.setLineDash([7/S.zoom,4/S.zoom]);
+    for(const id of S.trimEdges){
+      const o=S.objects.find(x=>x.id===id);
+      if(!o) continue;
+      ctx.lineWidth=((o.th||2)+6)/S.zoom;
+      trimGeomsOf(o).forEach(g=>{
+        ctx.beginPath();
+        if(g.kind==='seg'){ ctx.moveTo(g.p1.x,g.p1.y); ctx.lineTo(g.p2.x,g.p2.y); }
+        else ctx.ellipse(g.cx,g.cy,Math.max(1,g.rx),Math.max(1,g.ry),0, g.a0??0, g.a0!==undefined?g.a0+g.aSpan:7);
+        ctx.stroke();
+      });
+    }
+    ctx.setLineDash([]);
+  }
+  if(S.trimHover){
+    const {mode, preview}=S.trimHover;
+    ctx.globalAlpha=1; ctx.lineWidth=5/S.zoom;
+    ctx.strokeStyle = mode==='extend' ? '#2E9E4C' : '#D62828';
+    ctx.setLineDash(mode==='extend' ? [] : [5/S.zoom,4/S.zoom]);
+    ctx.beginPath();
+    if(preview.kind==='seg'){ ctx.moveTo(preview.p1.x,preview.p1.y); ctx.lineTo(preview.p2.x,preview.p2.y); }
+    else if(preview.kind==='arc'){ ctx.ellipse(preview.cx,preview.cy,Math.max(1,preview.rx),Math.max(1,preview.ry),0, preview.a0, preview.a0+preview.aSpan); }
+    else if(preview.kind==='poly'){ preview.pts.forEach((p,i)=> i? ctx.lineTo(p.x,p.y) : ctx.moveTo(p.x,p.y)); }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+}
+
 /* ═════════ KALIBRATIE ═════════ */
 function finishCalib(p2){
   const t=S.temp;
@@ -2117,8 +2538,18 @@ addEventListener('keydown', e=>{
   if(e.ctrlKey && e.key.toLowerCase()==='d'){ e.preventDefault(); dupSel(); return; }
   if(e.ctrlKey && e.key.toLowerCase()==='v'){ e.preventDefault(); if(S.clipboard) pasteClipboardAt(S.mouse.wx, S.mouse.wy); return; }
   if(e.key==='Escape'){
+    if(S.tool==='trim'){
+      if(S.trimPending){ S.trimPending=null; hint.textContent='Fence/crossing geannuleerd.'; draw(); return; }
+      setTool('select'); return;
+    }
     if(S.tool==='exportarea' && S.exportRect){ S.exportRect=null; showProps(); }
     cancelTemp(); S.sel=null; showProps(); draw();
+  }
+  if(e.key==='Enter'){
+    if(S.tool==='trim'){
+      if(S.trimPhase==='edges') confirmTrimEdges(); else setTool('select');
+      return;
+    }
   }
   if(e.key==='Delete' || e.key==='Backspace'){ delSel(); }
   if(e.key.toLowerCase()==='r' && S.sel){
@@ -2130,6 +2561,17 @@ addEventListener('keydown', e=>{
   }
   if(e.key==='['){ S.gumSize=Math.max(4,S.gumSize-4); if(S.tool==='gum'&&!S.sel) showGumProps(); draw(); }
   if(e.key===']'){ S.gumSize=Math.min(80,S.gumSize+4); if(S.tool==='gum'&&!S.sel) showGumProps(); draw(); }
+  if(!e.ctrlKey && !e.metaKey && !e.altKey){
+    const k=e.key.toLowerCase();
+    if(k==='t' && S.tool!=='trim'){ setTool('trim'); return; }
+    if(S.tool==='trim'){
+      if(k==='u'){ e.preventDefault(); undo(); return; }
+      if(S.trimPhase==='targets'){
+        if(k==='f'){ S.trimPending='fence'; hint.textContent='Fence: sleep een lijn door de te trimmen objecten.'; }
+        if(k==='c'){ S.trimPending='crossing'; hint.textContent='Crossing: sleep een kader over de te trimmen objecten.'; }
+      }
+    }
+  }
 });
 function delSel(){
   if(!S.sel) return;
@@ -2388,6 +2830,7 @@ const HINTS={
   circle:'Sleep om een cirkel of ellips te tekenen',
   arrow:'Sleep om een pijl te tekenen · pijlpunt aan het einde',
   gum:'Sleep om te gummen · grootte en kleur staan rechts in het paneel · [ en ] = kleiner/groter · Ctrl+Z herstelt',
+  trim:'Stap 1: klik snijranden aan (Enter/klik in leeg = alle randen) · Stap 2: klik het te verwijderen deel · Shift+klik = verlengen i.p.v. trimmen · F = fence-sleep, C = crossing-sleep door meerdere objecten · U = laatste knip ongedaan · Esc = tool sluiten',
   fill:'Sleep een rechthoek die gevuld wordt met de statuskleur — bijv. zwart om een muuropening dicht te zetten · eigen kleur via selectie',
   wbdbo:'Sleep langs de scheidingsconstructie · aantal minuten instelbaar via selectie',
   exitroute:'Klik = punt · klik = volgend punt — tekent de vluchtroute als groene pijlen · rechtsklik of Esc = stoppen',
@@ -2411,12 +2854,16 @@ const HINTS={
   stairs:'Klik om trap te plaatsen · pijl toont looprichting (omhoog)',
 };
 /* ═════════ WERKBALK: activeren, vastzetten, in-/uitklappen ═════════ */
+const TRIM_CURSOR = `url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2224%22 height=%2224%22 viewBox=%220 0 24 24%22><circle cx=%226%22 cy=%226%22 r=%222.2%22 fill=%22none%22 stroke=%22%23D62828%22 stroke-width=%222%22/><circle cx=%226%22 cy=%2218%22 r=%222.2%22 fill=%22none%22 stroke=%22%23D62828%22 stroke-width=%222%22/><path d=%22M20 5L7.6 17.4M20 19L4 6%22 stroke=%22%23D62828%22 stroke-width=%222%22 fill=%22none%22/></svg>') 6 12, crosshair`;
 function setTool(t){
+  const prev=S.tool;
   S.tool=t;
   document.querySelectorAll('.tool').forEach(x=>x.classList.toggle('on', x.dataset.t===t));
   cancelTemp();
-  if(t==='gum' || t==='exportarea'){ S.sel=null; }   // eigen instellingenpaneel tonen
-  cv.style.cursor = t==='pan'?'grab' : t==='select'?'default':'crosshair';
+  if(t==='gum' || t==='exportarea' || t==='trim'){ S.sel=null; }   // eigen instellingenpaneel tonen
+  if(t==='trim'){ S.trimEdges=new Set(); S.trimPhase='edges'; S.trimHover=null; S.trimPending=null; }
+  else if(prev==='trim'){ S.trimEdges=new Set(); S.trimHover=null; S.trimPending=null; }
+  cv.style.cursor = t==='pan'?'grab' : t==='select'?'default' : t==='trim'?TRIM_CURSOR : 'crosshair';
   hint.textContent = HINTS[t] || `Klik om ${(SYMBOL_NAMES[t]||'symbool').toLowerCase()} te plaatsen · R = draaien · hoekgreep = schalen`;
   showProps();
 }
@@ -2699,6 +3146,7 @@ document.getElementById('stGridTop').addEventListener('change', e=>{ S.gridTop=e
 document.getElementById('stSnap').addEventListener('change', e=>{ S.snap=e.target.checked; });
 document.getElementById('stFreehand').addEventListener('change', e=>{ S.freehand=e.target.checked; cancelTemp(); });
 document.getElementById('stAngleSnap').addEventListener('change', e=>{ S.angleSnap=e.target.checked; });
+document.getElementById('stTrimExtend').addEventListener('change', e=>{ S.trimExtend=e.target.checked; });
 document.getElementById('stZoomIn').onclick=()=>zoomCenter(1.2);
 document.getElementById('stZoomOut').onclick=()=>zoomCenter(1/1.2);
 function zoomCenter(f){
