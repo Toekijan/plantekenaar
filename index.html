@@ -6,7 +6,9 @@
 <title>PlanTekenaar — 2D Plattegrond Editor</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.2/proj4.js"></script>
 <script src="geometry.js"></script>
+<script src="georeference.js"></script>
 <style>
   :root{
     --chrome:#23272C; --chrome2:#2B3036; --chrome3:#343A41; --line:#3E454D;
@@ -105,6 +107,34 @@
   #txtInput{position:absolute; display:none; font-size:14px; padding:4px 6px;
     border:2px solid var(--accent); border-radius:4px; background:#fff; color:#111;
     min-width:160px; outline:none; z-index:20;}
+
+  /* ── Georeferentie ──────────────────── */
+  #georefInput{position:absolute; display:none; z-index:25; background:var(--chrome2);
+    border:2px solid var(--accent); border-radius:8px; padding:10px; width:190px;
+    box-shadow:0 6px 18px rgba(0,0,0,.4); font-size:12px;}
+  #georefInput .glabel{font-weight:600; margin-bottom:6px; color:var(--ink);}
+  #georefInput label{display:block; font-size:11px; color:var(--ink-dim); margin:6px 0 2px;}
+  #georefInput input{width:100%; padding:5px 6px; background:var(--chrome); border:1px solid var(--line);
+    color:var(--ink); border-radius:5px; font-size:12.5px;}
+  #georefInputErr{color:#ff7a7a; font-size:11px; margin-top:5px; min-height:14px; line-height:1.4;}
+  #georefInput .grow-row{display:flex; gap:6px; margin-top:8px;}
+  #georefInput .grow-row button{flex:1; padding:6px 4px; border-radius:6px; font-size:12px;}
+  #georefInput #georefInputOk{background:var(--accent); color:#fff;}
+  #georefInput #georefInputCancel{background:var(--chrome3); color:var(--ink);}
+
+  #georefOverlay{position:absolute; display:none; flex-direction:column; gap:4px;
+    left:10px; bottom:14px; z-index:15; background:rgba(20,22,25,.88); color:var(--ink);
+    padding:8px 12px; border-radius:8px; font-size:12px; font-family:ui-monospace,monospace;
+    pointer-events:auto; min-width:190px;}
+  #georefOverlay .gorow{display:flex; justify-content:space-between; gap:10px; white-space:nowrap;}
+  #georefOverlay .gomuted{color:var(--ink-dim);}
+  #georefScaleBar{display:flex; align-items:center; gap:6px; margin-top:2px;}
+  #georefScaleBarLine{height:4px; background:var(--ink); border-left:1px solid var(--ink);
+    border-right:1px solid var(--ink); min-width:2px;}
+  #georefScaleBarLabel{font-size:11px; color:var(--ink-dim);}
+  #georefOverlay label{display:flex; align-items:center; gap:5px; font-size:11px; color:var(--ink-dim);
+    margin-top:2px; cursor:pointer;}
+
   #drop{position:absolute; inset:0; display:none; align-items:center; justify-content:center;
     background:rgba(61,155,233,.15); border:3px dashed var(--accent); z-index:30;
     font-size:18px; color:#fff; pointer-events:none;}
@@ -181,6 +211,7 @@
     <button class="tool" data-t="text"><svg viewBox="0 0 24 24"><path d="M5 6h14M12 6v13"/></svg>Tekst</button>
     <button class="tool" data-t="dim"><svg viewBox="0 0 24 24"><path d="M4 12h16M4 9v6M20 9v6M8 12l-2-2m2 2l-2 2M16 12l2-2m-2 2l2 2"/></svg>Maatlijn</button>
     <button class="tool" data-t="calib"><svg viewBox="0 0 24 24"><rect x="3" y="9" width="18" height="6" rx="1"/><path d="M7 9v3M11 9v4M15 9v3M19 9v4"/></svg>Kalibreren</button>
+    <button class="tool" data-t="georef" title="Georefereren op RD-coördinaten (EPSG:28992)"><svg viewBox="0 0 24 24"><circle cx="12" cy="10" r="7"/><path d="M12 2v2M12 16v2M4 10H2M22 10h-2"/><circle cx="12" cy="10" r="2" fill="currentColor" stroke="none"/></svg>Georefereren</button>
     <button class="tool" data-t="exportarea"><svg viewBox="0 0 24 24"><path d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4" stroke-dasharray="0"/><rect x="8" y="9" width="8" height="6" stroke-dasharray="2 2"/></svg>Exportkader</button>
   </div></div>
 
@@ -266,6 +297,26 @@
   <canvas id="cv"></canvas>
   <input id="txtInput" type="text" placeholder="Tekst… (Enter)">
   <div id="hint"></div>
+
+  <div id="georefInput">
+    <div class="glabel">Referentiepunt <span id="georefInputNum">1</span> — RD-coördinaten</div>
+    <label>X (m) <span class="gomuted" style="font-weight:400">0 – 300.000</span><input id="georefInputX" type="number" step="0.01" placeholder="bijv. 121000.00"></label>
+    <label>Y (m) <span class="gomuted" style="font-weight:400">300.000 – 650.000</span><input id="georefInputY" type="number" step="0.01" placeholder="bijv. 487000.00"></label>
+    <div id="georefInputErr"></div>
+    <div class="grow-row">
+      <button id="georefInputOk">OK</button>
+      <button id="georefInputCancel">Annuleren</button>
+    </div>
+  </div>
+
+  <div id="georefOverlay">
+    <div class="gorow"><b>RD</b><span id="georefCoordRD">X: – · Y: –</span></div>
+    <div class="gorow" id="georefCoordWgsRow" style="display:none"><span class="gomuted">WGS84</span><span id="georefCoordWgs">–</span></div>
+    <div id="georefScaleBar"><div id="georefScaleBarLine"></div><span id="georefScaleBarLabel">–</span></div>
+    <label><input type="checkbox" id="georefShowWgs"> WGS84 tonen</label>
+    <label title="Ctrl+klik op de tekening kopieert de RD-coördinaten (en WGS84 indien getoond) van dat punt"><input type="checkbox" disabled checked> Ctrl+klik = kopieer coördinaten</label>
+  </div>
+
   <div id="drop">Laat los om PDF of afbeelding te plaatsen</div>
 </div>
 
@@ -380,8 +431,34 @@ const S = {
   gridTop: false, exportRect: null, calibTarget: null,
   ui: { pinned: ['select','pan'] },
   pdfDoc: null, pdfObj: null,
+  georef: {
+    points: [],        // {id, wx, wy, rdX, rdY} — wx/wy in wereld-/documentcoördinaten (px)
+    transform: null,   // {a,b,c,d,e,f} wereld → RD, via PTGeoRef.fitAffine
+    residuals: null, quality: null,
+    rmsThreshold: 0.5, // m — instelbare waarschuwingsdrempel
+    showWgs84: false,
+    lookupPoint: null, // {rdX, rdY, wx, wy} — opgezocht RD-punt, getoond op de tekening
+  },
+  georefDrag: null, georefSel: null, georefLastTouch: null,
 };
 let idSeq = 1;
+let georefIdSeq = 1;
+
+/* RD (EPSG:28992) → ETRS89/WGS84 — officiële Bessel-parameters + de door
+   Kadaster gepubliceerde 7-parameter Helmert-benadering (RDNAPTRANS-achtig,
+   nauwkeurig tot op enkele centimeters, ruim voldoende voor deze weergave). */
+if(typeof proj4 !== 'undefined'){
+  proj4.defs('EPSG:28992',
+    '+proj=sterea +lat_0=52.15616055555555 +lon_0=5.38763888888889 ' +
+    '+k=0.9999079 +x_0=155000 +y_0=463000 +ellps=bessel ' +
+    '+towgs84=565.4171,50.3319,465.5524,-0.398957,0.343988,-1.87740,4.0725 ' +
+    '+units=m +no_defs');
+}
+function rdToWgs84(rdX, rdY){
+  if(typeof proj4 === 'undefined') return null;
+  const [lon,lat] = proj4('EPSG:28992','WGS84',[rdX,rdY]);
+  return {lat, lon};
+}
 
 const stateColor = s => s==='nieuw' ? '#D62828' : s==='slopen' ? '#E8B800' : '#2B2B2B';
 
@@ -536,6 +613,8 @@ function draw(){
   if(S.temp) drawTemp();
   if(S.sel) drawSelection(S.sel);
   if(S.tool==='trim' || S.trimHover) drawTrimOverlay();
+  if(S.tool==='georef') drawGeorefMarkers();
+  if(S.georef.lookupPoint) drawGeorefLookupMarker();
   if(S.tool==='gum' && !S.hideGumCursor){
     const r=S.gum ? S.gum.r : S.gumSize/S.zoom;
     ctx.save();
@@ -544,6 +623,7 @@ function draw(){
     ctx.restore();
   }
   ctx.restore();
+  updateGeorefScaleBar();
 }
 
 function drawGrid(vw){
@@ -1458,6 +1538,7 @@ cv.addEventListener('mousedown', e=>{
   const w=toW(sx,sy);
   S.mouse={...S.mouse, x:sx, y:sy, wx:w.x, wy:w.y, down:true};
 
+  if(e.ctrlKey && e.button===0 && S.georef.transform){ copyGeorefCoords(w); return; }
   if(e.button===1 || S.tool==='pan'){ lastPan={sx,sy}; return; }
   if(e.button===2){
     if(S.tool==='trim'){
@@ -1561,6 +1642,7 @@ cv.addEventListener('mousedown', e=>{
       else finishCalib(wp);
       break;
     }
+    case 'georef': handleGeorefClick(sx, sy, w); break;
     case 'dim': {
       if(!S.temp) S.temp={kind:'dim', x1:wp.x,y1:wp.y,x2:wp.x,y2:wp.y};
       else {
@@ -1589,7 +1671,13 @@ cv.addEventListener('mousemove', e=>{
   const w=toW(sx,sy);
   S.mouse={...S.mouse, x:sx, y:sy, wx:w.x, wy:w.y};
   stPos.textContent=`x: ${fmtDist(m(w.x))} · y: ${fmtDist(m(w.y))}`;
+  if(S.georef.transform) updateGeorefOverlay(w);
 
+  if(S.georefDrag){
+    S.georefDrag.wx=w.x; S.georefDrag.wy=w.y;
+    recomputeGeoref(); refreshGeorefProps(); draw();
+    return;
+  }
   if(lastPan){
     S.panX+=sx-lastPan.sx; S.panY+=sy-lastPan.sy;
     lastPan={sx,sy}; draw(); return;
@@ -1690,6 +1778,7 @@ cv.addEventListener('mousemove', e=>{
 addEventListener('mouseup', ()=>{
   S.mouse.down=false;
   lastPan=null;
+  if(S.georefDrag){ S.georefDrag=null; }
   if(S.drag){ S.drag=null; }
   if(S.gum){ S.gum=null; updCount(); draw(); }
   if(!S.temp) return;
@@ -2472,14 +2561,34 @@ function finishCalib(p2){
   pushUndo();
   if(targets.length){
     const f=(meters*S.scale)/lenPx;
+    let movedPoints=0;
     targets.forEach(u=>{
+      // georeferentiepunten die op deze onderlaag stonden mee laten schalen/verschuiven,
+      // anders raken ze visueel los van het kaartbeeld dat ze markeren.
+      const bb=bboxOf(u);
+      S.georef.points.forEach(p=>{
+        if(p.wx>=bb.x && p.wx<=bb.x+bb.w && p.wy>=bb.y && p.wy<=bb.y+bb.h){
+          p.wx=t.x1+(p.wx-t.x1)*f;
+          p.wy=t.y1+(p.wy-t.y1)*f;
+          movedPoints++;
+        }
+      });
       u.x=t.x1+(u.x-t.x1)*f;
       u.y=t.y1+(u.y-t.y1)*f;
       u.w*=f; u.h*=f;
     });
-    hint.textContent=targets.length===1
+    if(movedPoints){
+      recomputeGeoref();
+      if(S.georef.lookupPoint && S.georef.transform){
+        const lp=S.georef.lookupPoint;
+        const w=PTGeoRef.rdToWorld(S.georef.transform, lp.rdX, lp.rdY);
+        lp.wx=w.x; lp.wy=w.y;
+      }
+    }
+    hint.textContent=(targets.length===1
       ? `Onderlaag/uitsnede geschaald (×${f.toFixed(3)}) — de maat klopt nu met ${Math.round(S.scale)} px/m.`
-      : `${targets.length} onderlagen geschaald (×${f.toFixed(3)}).`;
+      : `${targets.length} onderlagen geschaald (×${f.toFixed(3)}).`)
+      + (movedPoints ? ` ${movedPoints} georeferentiepunt(en) meeverschoven.` : '');
   } else {
     S.scale=lenPx/meters;
     stScale.value=Math.round(S.scale);
@@ -2488,6 +2597,366 @@ function finishCalib(p2){
   }
   draw();
 }
+
+/* ═════════ GEOREFERENTIE (RD-coördinaten, EPSG:28992) ═════════ */
+const georefOverlay=document.getElementById('georefOverlay');
+const georefInputEl=document.getElementById('georefInput');
+const georefInputX=document.getElementById('georefInputX');
+const georefInputY=document.getElementById('georefInputY');
+const georefInputErr=document.getElementById('georefInputErr');
+let georefPendingPoint=null; // punt dat nog op RD-invoer wacht
+
+const GEOREF_HIT_R = 10; // px/zoom-genormaliseerde hittest-straal voor markers
+
+function hitGeorefPoint(wx, wy){
+  const tol=GEOREF_HIT_R/S.zoom;
+  let best=null, bestD=Infinity;
+  for(const p of S.georef.points){
+    const d=Math.hypot(wx-p.wx, wy-p.wy);
+    if(d<=tol && d<bestD){ best=p; bestD=d; }
+  }
+  return best;
+}
+
+function handleGeorefClick(sx, sy, w){
+  if(georefPendingPoint) return; // eerst huidig punt afronden of annuleren
+  const hitPt=hitGeorefPoint(w.x, w.y);
+  if(hitPt){
+    S.georefSel=hitPt; S.georefDrag=hitPt;
+    showProps(); draw();
+    return;
+  }
+  if(S.georef.points.length>=4){
+    hint.textContent='Er staan al 4 referentiepunten. Verwijder een punt (in het paneel rechts) om een nieuwe te plaatsen, of sleep een bestaand punt.';
+    return;
+  }
+  const pt={id:georefIdSeq++, wx:w.x, wy:w.y, rdX:null, rdY:null};
+  S.georef.points.push(pt);
+  S.georefSel=pt;
+  showProps(); draw();
+  openGeorefInput(sx, sy, pt);
+}
+
+function openGeorefInput(sx, sy, pt){
+  georefPendingPoint=pt;
+  const num=S.georef.points.indexOf(pt)+1;
+  document.getElementById('georefInputNum').textContent=num;
+  georefInputX.value = pt.rdX!=null ? pt.rdX : '';
+  georefInputY.value = pt.rdY!=null ? pt.rdY : '';
+  georefInputErr.textContent='';
+  const wrapEl=wrap.getBoundingClientRect();
+  let left=sx+14, top=sy+14;
+  if(left+200>wrapEl.width) left=Math.max(4, sx-210);
+  if(top+180>wrapEl.height) top=Math.max(4, sy-190);
+  georefInputEl.style.left=left+'px'; georefInputEl.style.top=top+'px';
+  georefInputEl.style.display='block';
+  setTimeout(()=>georefInputX.focus(),0);
+}
+function closeGeorefInput(){
+  if(!georefPendingPoint) return;
+  georefInputEl.style.display='none';
+  georefPendingPoint=null;
+}
+function commitGeorefInput(){
+  if(!georefPendingPoint) return;
+  const x=parseFloat(String(georefInputX.value).replace(',','.'));
+  const y=parseFloat(String(georefInputY.value).replace(',','.'));
+  const v=PTGeoRef.validateRD(x, y);
+  if(!v.valid){ georefInputErr.textContent=v.errors.join(' '); return; }
+  georefPendingPoint.rdX=x; georefPendingPoint.rdY=y;
+  georefInputEl.style.display='none';
+  georefPendingPoint=null;
+  recomputeGeoref();
+  showProps(); draw();
+  hint.textContent='Referentiepunt vastgelegd. Klik het volgende punt, of sleep/bewerk bestaande punten.';
+}
+function cancelGeorefInput(){
+  if(!georefPendingPoint) return;
+  // nieuw, nog niet ingevulde punten helemaal weer weggooien
+  if(georefPendingPoint.rdX==null){
+    S.georef.points=S.georef.points.filter(p=>p!==georefPendingPoint);
+    if(S.georefSel===georefPendingPoint) S.georefSel=null;
+  }
+  georefInputEl.style.display='none';
+  georefPendingPoint=null;
+  showProps(); draw();
+}
+document.getElementById('georefInputOk').addEventListener('click', commitGeorefInput);
+document.getElementById('georefInputCancel').addEventListener('click', cancelGeorefInput);
+georefInputEl.addEventListener('keydown', e=>{
+  if(e.key==='Enter'){ e.preventDefault(); commitGeorefInput(); }
+  if(e.key==='Escape'){ e.preventDefault(); cancelGeorefInput(); }
+  e.stopPropagation();
+});
+
+function removeGeorefPoint(pt){
+  S.georef.points=S.georef.points.filter(p=>p!==pt);
+  if(S.georefSel===pt) S.georefSel=null;
+  if(S.georefDrag===pt) S.georefDrag=null;
+  recomputeGeoref();
+  showProps(); draw();
+}
+function clearGeorefPoints(){
+  S.georef.points=[]; S.georefSel=null; S.georefDrag=null;
+  recomputeGeoref();
+  showProps(); draw();
+}
+
+/* herberekent de affiene fit + residuen + kwaliteitscheck uit alle punten
+   die al een RD-coördinaat hebben (minimaal 3 nodig voor een fit). */
+function recomputeGeoref(){
+  const ready=S.georef.points.filter(p=>p.rdX!=null && p.rdY!=null);
+  if(ready.length>=3){
+    try{
+      const fitPts=ready.map(p=>({x:p.wx, y:p.wy, rdX:p.rdX, rdY:p.rdY}));
+      const t=PTGeoRef.fitAffine(fitPts);
+      S.georef.transform=t;
+      S.georef.residuals=PTGeoRef.residuals(fitPts, t);
+      S.georef.quality=PTGeoRef.quality(ready.map(p=>({rdX:p.rdX,rdY:p.rdY})));
+      S.georef.error=null;
+    }catch(err){
+      S.georef.transform=null; S.georef.residuals=null; S.georef.quality=null;
+      S.georef.error=err.message;
+    }
+  } else {
+    S.georef.transform=null; S.georef.residuals=null; S.georef.quality=null; S.georef.error=null;
+  }
+  georefOverlay.style.display = S.georef.transform ? 'flex' : 'none';
+}
+
+function copyGeorefCoords(w){
+  const rd=PTGeoRef.worldToRD(S.georef.transform, w.x, w.y);
+  let text=`X: ${rd.x.toFixed(2)} Y: ${rd.y.toFixed(2)}`;
+  if(S.georef.showWgs84){
+    const g=rdToWgs84(rd.x, rd.y);
+    if(g) text += ` (${g.lat.toFixed(6)}, ${g.lon.toFixed(6)})`;
+  }
+  const done=()=>{ hint.textContent=`Coördinaten gekopieerd: ${text}`; };
+  if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, done);
+  else done();
+}
+
+/* live coördinaatoverlay, bijgewerkt op elke muisbeweging boven het canvas
+   zodra er een geldige kalibratie is (onafhankelijk van het actieve gereedschap) */
+function updateGeorefOverlay(w){
+  if(!S.georef.transform) return;
+  const rd=PTGeoRef.worldToRD(S.georef.transform, w.x, w.y);
+  document.getElementById('georefCoordRD').textContent=`X: ${rd.x.toFixed(2)} · Y: ${rd.y.toFixed(2)}`;
+  const wgsRow=document.getElementById('georefCoordWgsRow');
+  if(S.georef.showWgs84){
+    wgsRow.style.display='flex';
+    const g=rdToWgs84(rd.x, rd.y);
+    document.getElementById('georefCoordWgs').textContent = g ? `${g.lat.toFixed(6)}°N, ${g.lon.toFixed(6)}°E` : '–';
+  } else wgsRow.style.display='none';
+}
+function updateGeorefScaleBar(){
+  if(!S.georef.transform){ return; }
+  const sr=PTGeoRef.scaleAndRotation(S.georef.transform);
+  if(!(sr.unitsPerMeter>0)) return;
+  const targetPx=90; // streefbreedte van de balk in schermpixels
+  const niceM=niceStep(targetPx/(sr.unitsPerMeter*S.zoom));
+  const barPx=niceM*sr.unitsPerMeter*S.zoom;
+  const line=document.getElementById('georefScaleBarLine');
+  if(line) line.style.width=Math.max(2,barPx)+'px';
+  const lbl=document.getElementById('georefScaleBarLabel');
+  if(lbl) lbl.textContent=`${niceM>=1000?(niceM/1000)+' km':niceM+' m'} (1 px = ${sr.metersPerUnit.toFixed(4)} m)`;
+}
+document.getElementById('georefShowWgs').addEventListener('change', e=>{
+  S.georef.showWgs84=e.target.checked;
+  updateGeorefOverlay({x:S.mouse.wx, y:S.mouse.wy});
+});
+
+/* getekende, genummerde markers op het canvas — alleen zichtbaar terwijl
+   het Georefereren-gereedschap actief is, zodat ze de tekening niet blijvend
+   vervuilen (de kalibratie zelf blijft natuurlijk altijd actief). */
+function drawGeorefMarkers(){
+  ctx.save();
+  S.georef.points.forEach((p,i)=>{
+    const sel = S.georefSel===p;
+    const ok = p.rdX!=null && p.rdY!=null;
+    ctx.fillStyle = ok ? (sel?'#3D9BE9':'#0B8A42') : '#E8B800';
+    ctx.strokeStyle='#fff'; ctx.lineWidth=1.5/S.zoom;
+    ctx.beginPath(); ctx.arc(p.wx,p.wy,9/S.zoom,0,7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#fff'; ctx.font=`700 ${11/S.zoom}px ui-sans-serif`;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(String(i+1), p.wx, p.wy);
+    ctx.textAlign='start'; ctx.textBaseline='alphabetic';
+    if(ok){
+      ctx.fillStyle='#111'; ctx.font=`${11/S.zoom}px ui-monospace`;
+      const label=`${p.rdX.toFixed(2)}, ${p.rdY.toFixed(2)}`;
+      ctx.fillStyle='rgba(20,22,25,.8)';
+      const tw=ctx.measureText(label).width;
+      ctx.fillRect(p.wx+12/S.zoom, p.wy-8/S.zoom, tw+8/S.zoom, 16/S.zoom);
+      ctx.fillStyle='#fff';
+      ctx.fillText(label, p.wx+16/S.zoom, p.wy+4/S.zoom);
+    }
+  });
+  ctx.restore();
+}
+
+/* opgezocht RD-punt (omgekeerde richting: RD → tekening) — blijft zichtbaar
+   ongeacht het actieve gereedschap, tot de gebruiker het wist of een nieuw
+   punt opzoekt. Duidelijk andere stijl dan de kalibratiepunten. */
+function drawGeorefLookupMarker(){
+  const lp=S.georef.lookupPoint;
+  if(!lp) return;
+  ctx.save();
+  const r=9/S.zoom;
+  ctx.strokeStyle='#D62828'; ctx.lineWidth=2.5/S.zoom;
+  ctx.beginPath();
+  ctx.moveTo(lp.wx-r*1.6,lp.wy); ctx.lineTo(lp.wx+r*1.6,lp.wy);
+  ctx.moveTo(lp.wx,lp.wy-r*1.6); ctx.lineTo(lp.wx,lp.wy+r*1.6);
+  ctx.stroke();
+  ctx.beginPath(); ctx.arc(lp.wx,lp.wy,r,0,7); ctx.stroke();
+  ctx.fillStyle='#D62828'; ctx.beginPath(); ctx.arc(lp.wx,lp.wy,2.5/S.zoom,0,7); ctx.fill();
+  const label=`X: ${lp.rdX.toFixed(2)} · Y: ${lp.rdY.toFixed(2)}`;
+  ctx.font=`700 ${12/S.zoom}px ui-monospace`;
+  const tw=ctx.measureText(label).width;
+  ctx.fillStyle='rgba(214,40,40,.92)';
+  ctx.fillRect(lp.wx+r*1.6+4/S.zoom, lp.wy-11/S.zoom, tw+10/S.zoom, 20/S.zoom);
+  ctx.fillStyle='#fff';
+  ctx.fillText(label, lp.wx+r*1.6+9/S.zoom, lp.wy+4/S.zoom);
+  ctx.restore();
+}
+function centerViewOn(wx, wy){
+  const W=wrap.clientWidth, H=wrap.clientHeight;
+  S.panX=W/2 - wx*S.zoom;
+  S.panY=H/2 - wy*S.zoom;
+  stZoom.textContent=Math.round(S.zoom*100)+'%';
+}
+
+/* touch: toon de coördinaten van de laatst aangetikte positie */
+cv.addEventListener('touchstart', e=>{
+  if(!e.touches || !e.touches.length || !S.georef.transform) return;
+  const r=cv.getBoundingClientRect();
+  const t=e.touches[0];
+  const w=toW(t.clientX-r.left, t.clientY-r.top);
+  S.georefLastTouch=w;
+  updateGeorefOverlay(w);
+}, {passive:true});
+
+/* ═════════ GEOREFERENTIE: EIGENSCHAPPENPANEEL ═════════ */
+function showGeorefProps(){
+  const g=S.georef;
+  let h=`<div class="pfield" style="font-size:13px;font-weight:600;color:var(--ink)">Georefereren (RD, EPSG:28992)</div>
+    <div class="pfield" style="font-size:11.5px;color:var(--ink-dim);line-height:1.55">
+      Klik 4 punten op de tekening waarvan je de echte RD-coördinaat weet (bijv. kadastrale hoekpunten).
+      Sleep een marker om te verplaatsen, klik "Verwijderen" om een punt te wissen.
+    </div>`;
+  g.points.forEach((p,i)=>{
+    const res = g.residuals ? g.residuals.perPoint[g.points.filter(q=>q.rdX!=null&&q.rdY!=null).indexOf(p)] : null;
+    h+=`<div class="pfield" style="background:var(--chrome);border:1px solid var(--line);border-radius:6px;padding:8px;">
+      <div class="prow" style="align-items:center;margin-bottom:6px">
+        <b style="flex:1">Punt ${i+1}</b>
+        <button class="pbtn danger" style="flex:none;padding:3px 8px" data-gdel="${p.id}">✕</button>
+      </div>
+      <div class="prow" style="gap:6px">
+        <input data-gx="${p.id}" type="number" step="0.01" placeholder="RD X" value="${p.rdX!=null?p.rdX:''}" style="width:50%;padding:5px 6px;background:var(--chrome2);border:1px solid var(--line);color:var(--ink);border-radius:5px;font-size:12px;">
+        <input data-gy="${p.id}" type="number" step="0.01" placeholder="RD Y" value="${p.rdY!=null?p.rdY:''}" style="width:50%;padding:5px 6px;background:var(--chrome2);border:1px solid var(--line);color:var(--ink);border-radius:5px;font-size:12px;">
+      </div>
+      ${res ? `<div style="font-size:11px;color:${res.error>g.rmsThreshold?'#ff7a7a':'var(--ink-dim)'};margin-top:5px">Residu: ${res.error.toFixed(3)} m</div>` : ''}
+    </div>`;
+  });
+  if(g.points.length<4){
+    h+=`<div class="pfield" style="font-size:11.5px;color:var(--ink-dim)">Nog ${4-g.points.length} punt(en) te plaatsen — klik op de tekening.</div>`;
+  }
+  if(g.points.length){
+    h+=`<div class="prow" style="margin-bottom:10px"><button class="pbtn danger" id="gClearAll">Alle punten wissen</button></div>`;
+  }
+  if(g.error){
+    h+=`<div class="pfield" style="font-size:12px;color:#ff7a7a">${g.error}</div>`;
+  }
+  if(g.transform && g.residuals){
+    const overThreshold = g.residuals.rms > g.rmsThreshold;
+    h+=`<div class="pfield" style="font-size:12.5px;font-weight:600;color:var(--ink);margin-top:4px">Resultaat</div>`;
+    h+=`<div class="pfield" style="font-size:12px;color:${overThreshold?'#ff7a7a':'#7fd49a'}">
+      RMS-fout: ${g.residuals.rms.toFixed(3)} m ${overThreshold?'⚠ boven drempel':'✓'} (max ${g.residuals.max.toFixed(3)} m)</div>`;
+    h+=fld('Waarschuwingsdrempel RMS (m)', `<input id="gThreshold" type="number" step="0.05" min="0.01" value="${g.rmsThreshold}">`);
+    if(g.quality && g.quality.warnings.length){
+      h+=`<div class="pfield" style="font-size:11.5px;color:#ffcf5c;background:#3a2f13;border-radius:6px;padding:8px;line-height:1.5">
+        ⚠ ${g.quality.warnings.join('<br>⚠ ')}
+      </div>`;
+    }
+    const sr=PTGeoRef.scaleAndRotation(g.transform);
+    h+=`<div class="pfield" style="font-size:12px;color:var(--ink-dim);line-height:1.6">
+      Afgeleide schaal: <b style="color:var(--ink)">1 px = ${sr.metersPerUnit.toFixed(4)} m</b> (${sr.unitsPerMeter.toFixed(2)} px/m)<br>
+      Rotatie t.o.v. RD-noorden: <b style="color:var(--ink)">${sr.rotationDeg.toFixed(1)}°</b><br>
+      Huidige tekenschaal: ${S.scale.toFixed(2)} px/m
+      ${sr.nonUniformity>0.02 ? '<br><span style="color:#ffcf5c">⚠ X- en Y-schaal wijken merkbaar af — controleer de referentiepunten.</span>' : ''}
+    </div>`;
+    h+=`<div class="prow" style="margin-bottom:10px"><button class="pbtn" id="gUseScale">Gebruik als tekenschaal</button></div>`;
+
+    h+=`<div class="pfield" style="font-size:12.5px;font-weight:600;color:var(--ink);margin-top:4px">Coördinaat opzoeken</div>
+      <div class="pfield" style="font-size:11.5px;color:var(--ink-dim)">Voer een RD-coördinaat in om te zien waar dat punt op de tekening ligt.</div>
+      <div class="prow" style="gap:6px">
+        <input id="gLookupX" type="number" step="0.01" placeholder="RD X" value="${g.lookupPoint?g.lookupPoint.rdX:''}" style="width:50%;padding:6px 8px;background:var(--chrome);border:1px solid var(--line);color:var(--ink);border-radius:6px;font-size:13px;">
+        <input id="gLookupY" type="number" step="0.01" placeholder="RD Y" value="${g.lookupPoint?g.lookupPoint.rdY:''}" style="width:50%;padding:6px 8px;background:var(--chrome);border:1px solid var(--line);color:var(--ink);border-radius:6px;font-size:13px;">
+      </div>
+      <div id="gLookupErr" style="color:#ff7a7a;font-size:11px;margin-top:4px;min-height:14px"></div>
+      <div class="prow" style="margin-bottom:10px">
+        <button class="pbtn" id="gLookupShow">📍 Toon op tekening</button>
+        ${g.lookupPoint ? '<button class="pbtn danger" id="gLookupClear">Wissen</button>' : ''}
+      </div>`;
+  } else if(g.points.filter(p=>p.rdX!=null).length>0){
+    h+=`<div class="pfield" style="font-size:11.5px;color:var(--ink-dim)">Minimaal 3 ingevulde punten nodig voor een berekening.</div>`;
+  }
+  propBody.innerHTML=h;
+
+  propBody.querySelectorAll('[data-gdel]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const pt=g.points.find(p=>p.id===+btn.dataset.gdel);
+      if(pt) removeGeorefPoint(pt);
+    });
+  });
+  const B=PTGeoRef.RD_BOUNDS;
+  propBody.querySelectorAll('[data-gx]').forEach(inp=>{
+    inp.addEventListener('change', ()=>{
+      const pt=g.points.find(p=>p.id===+inp.dataset.gx);
+      const x=parseFloat(inp.value);
+      if(isNaN(x) || x<B.xMin || x>B.xMax){ hint.textContent=`X moet tussen ${B.xMin} en ${B.xMax} liggen.`; return; }
+      pt.rdX=x; recomputeGeoref(); showProps(); draw();
+    });
+  });
+  propBody.querySelectorAll('[data-gy]').forEach(inp=>{
+    inp.addEventListener('change', ()=>{
+      const pt=g.points.find(p=>p.id===+inp.dataset.gy);
+      const y=parseFloat(inp.value);
+      if(isNaN(y) || y<B.yMin || y>B.yMax){ hint.textContent=`Y moet tussen ${B.yMin} en ${B.yMax} liggen.`; return; }
+      pt.rdY=y; recomputeGeoref(); showProps(); draw();
+    });
+  });
+  const gc=document.getElementById('gClearAll');
+  if(gc) gc.addEventListener('click', clearGeorefPoints);
+  const gt=document.getElementById('gThreshold');
+  if(gt) gt.addEventListener('input', e=>{ g.rmsThreshold=Math.max(0.01, parseFloat(e.target.value)||0.5); showProps(); });
+  const gu=document.getElementById('gUseScale');
+  if(gu) gu.addEventListener('click', ()=>{
+    const sr=PTGeoRef.scaleAndRotation(g.transform);
+    if(!confirm(`Tekenschaal instellen op basis van de georeferentie?\n\nHuidig: ${S.scale.toFixed(2)} px/m\nNieuw: ${sr.unitsPerMeter.toFixed(2)} px/m (1 px = ${sr.metersPerUnit.toFixed(4)} m)\n\nDit verandert hoe bestaande maten in de tekening worden weergegeven.`)) return;
+    S.scale=sr.unitsPerMeter;
+    S.scaleByMode[S.mode]=S.scale;
+    stScale.value = S.mode==='kaart' ? +S.scale.toFixed(3) : Math.round(S.scale);
+    updScaleRatio();
+    hint.textContent=`Tekenschaal ingesteld op basis van de georeferentie: ${S.scale.toFixed(2)} px/m.`;
+    draw();
+  });
+  const gls=document.getElementById('gLookupShow');
+  if(gls) gls.addEventListener('click', ()=>{
+    const x=parseFloat(document.getElementById('gLookupX').value);
+    const y=parseFloat(document.getElementById('gLookupY').value);
+    const errEl=document.getElementById('gLookupErr');
+    const v=PTGeoRef.validateRD(x, y);
+    if(!v.valid){ errEl.textContent=v.errors.join(' '); return; }
+    const w=PTGeoRef.rdToWorld(g.transform, x, y);
+    g.lookupPoint={rdX:x, rdY:y, wx:w.x, wy:w.y};
+    centerViewOn(w.x, w.y);
+    showProps(); draw();
+    hint.textContent=`RD-punt X: ${x.toFixed(2)} · Y: ${y.toFixed(2)} getoond op de tekening.`;
+  });
+  const glc=document.getElementById('gLookupClear');
+  if(glc) glc.addEventListener('click', ()=>{ g.lookupPoint=null; showProps(); draw(); });
+}
+function refreshGeorefProps(){ if(S.tool==='georef') showProps(); }
 
 /* zoom */
 wrap.addEventListener('wheel', e=>{
@@ -2542,6 +3011,10 @@ addEventListener('keydown', e=>{
       if(S.trimPending){ S.trimPending=null; hint.textContent='Fence/crossing geannuleerd.'; draw(); return; }
       setTool('select'); return;
     }
+    if(S.tool==='georef'){
+      if(georefPendingPoint){ cancelGeorefInput(); return; }
+      S.georefSel=null; showProps(); draw(); return;
+    }
     if(S.tool==='exportarea' && S.exportRect){ S.exportRect=null; showProps(); }
     cancelTemp(); S.sel=null; showProps(); draw();
   }
@@ -2551,7 +3024,10 @@ addEventListener('keydown', e=>{
       return;
     }
   }
-  if(e.key==='Delete' || e.key==='Backspace'){ delSel(); }
+  if(e.key==='Delete' || e.key==='Backspace'){
+    if(S.tool==='georef' && S.georefSel){ removeGeorefPoint(S.georefSel); }
+    else delSel();
+  }
   if(e.key.toLowerCase()==='r' && S.sel){
     if(S.sel.rot!==undefined){
       pushUndo(); S.sel.rot=((S.sel.rot||0)+90)%360; refreshProps(); draw();
@@ -2600,6 +3076,7 @@ function showProps(){
   if(!o){
     if(S.tool==='gum'){ showGumProps(); return; }
     if(S.tool==='exportarea'){ showExportProps(); return; }
+    if(S.tool==='georef'){ showGeorefProps(); return; }
     propBody.innerHTML=noSelHTML; return;
   }
   let h=`<div class="pfield" style="font-size:13px;font-weight:600;color:var(--ink)">${SYMBOL_NAMES[o.type]||o.type}</div>`;
@@ -2824,6 +3301,7 @@ const HINTS={
   text:'Klik op de tekening en typ · Enter bevestigt · na plaatsing: hoekgreep = groter/kleiner',
   dim:'Klik beginpunt en eindpunt · toont maat in meters op basis van de schaal',
   calib:'Schaal instellen: klik 2 punten met bekende afstand op de tekening (bijv. een maatlijn op de PDF) en voer de meters in',
+  georef:'Klik tot 4 referentiepunten en voer per punt de RD X/Y-coördinaat in · sleep een marker om te verplaatsen · Ctrl+klik = kopieer coördinaten',
   line:'Klik = punt · klik = volgend punt · rechtsklik of Esc = stoppen · vrije hoek (360°) tenzij "Hoek snappen" aan staat, Shift keert dit tijdelijk om · "Vrije hand" onderin = slepen voor een handgetekende lijn',
   pencil:'Sleep om uit de vrije hand te tekenen',
   rect:'Sleep om een rechthoek te tekenen',
@@ -2860,9 +3338,10 @@ function setTool(t){
   S.tool=t;
   document.querySelectorAll('.tool').forEach(x=>x.classList.toggle('on', x.dataset.t===t));
   cancelTemp();
-  if(t==='gum' || t==='exportarea' || t==='trim'){ S.sel=null; }   // eigen instellingenpaneel tonen
+  if(t==='gum' || t==='exportarea' || t==='trim' || t==='georef'){ S.sel=null; }   // eigen instellingenpaneel tonen
   if(t==='trim'){ S.trimEdges=new Set(); S.trimPhase='edges'; S.trimHover=null; S.trimPending=null; }
   else if(prev==='trim'){ S.trimEdges=new Set(); S.trimHover=null; S.trimPending=null; }
+  if(prev==='georef' && t!=='georef'){ closeGeorefInput(); S.georefSel=null; S.georefDrag=null; }
   cv.style.cursor = t==='pan'?'grab' : t==='select'?'default' : t==='trim'?TRIM_CURSOR : 'crosshair';
   hint.textContent = HINTS[t] || `Klik om ${(SYMBOL_NAMES[t]||'symbool').toLowerCase()} te plaatsen · R = draaien · hoekgreep = schalen`;
   showProps();
@@ -2991,7 +3470,12 @@ function addUnderlay(dataUrl, w0, h0){
 /* opslaan / openen project */
 document.getElementById('btnSave').onclick=()=>{
   const data=JSON.stringify({v:2, scale:S.scale, mode:S.mode, objects:S.objects,
-    ui:S.ui, gumSize:S.gumSize, gumColor:S.gumColor}, replacer);
+    ui:S.ui, gumSize:S.gumSize, gumColor:S.gumColor,
+    georef:{
+      points: S.georef.points.map(p=>({id:p.id, wx:p.wx, wy:p.wy, rdX:p.rdX, rdY:p.rdY})),
+      rmsThreshold: S.georef.rmsThreshold,
+      showWgs84: S.georef.showWgs84,
+    }}, replacer);
   dl(new Blob([data],{type:'application/json'}), 'plattegrond.plan.json');
 };
 function loadProject(file){
@@ -3013,6 +3497,17 @@ function loadProject(file){
       }
       if(d.gumSize) S.gumSize=d.gumSize;
       if(d.gumColor) S.gumColor=d.gumColor;
+      if(d.georef && Array.isArray(d.georef.points)){
+        S.georef.points=d.georef.points;
+        S.georef.rmsThreshold=d.georef.rmsThreshold||0.5;
+        S.georef.showWgs84=!!d.georef.showWgs84;
+        document.getElementById('georefShowWgs').checked=S.georef.showWgs84;
+        georefIdSeq=Math.max(1,...S.georef.points.map(p=>p.id+1));
+      } else {
+        S.georef.points=[]; S.georef.rmsThreshold=0.5; S.georef.showWgs84=false;
+      }
+      S.georefSel=null; S.georefDrag=null;
+      recomputeGeoref();
       idSeq=Math.max(1,...S.objects.map(o=>o.id+1));
       S.objects.forEach(o=>{
         if(o.type==='underlay' && o.dataUrl){
