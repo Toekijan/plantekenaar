@@ -445,6 +445,7 @@ const S = {
     lookupPoint: null, // {rdX, rdY, wx, wy} — opgezocht RD-punt, getoond op de tekening
   },
   georefDrag: null, georefSel: null, georefLastTouch: null,
+  rotateDrag: null, // {o, pivot:{x,y}, startRot, startCenter:{x,y}, prevAngle, accumDeg, curAngle, liveDelta}
 };
 let idSeq = 1;
 let georefIdSeq = 1;
@@ -617,6 +618,8 @@ function draw(){
 
   if(S.temp) drawTemp();
   if(S.sel) drawSelection(S.sel);
+  if(S.sel && S.sel.type==='underlay') drawUnderlayHandles(S.sel);
+  if(S.rotateDrag) drawRotateOverlay();
   if(S.tool==='trim' || S.trimHover) drawTrimOverlay();
   if(S.tool==='georef') drawGeorefMarkers();
   if(S.georef.lookupPoint) drawGeorefLookupMarker();
@@ -1347,6 +1350,91 @@ function drawSelection(o){
   ctx.restore();
 }
 
+/* ═════════ ONDERLAAG: DRAAIPUNT + DRAAIGREEP ═════════
+   Een onderlaag draait standaard om zijn eigen middelpunt (pivotDx/pivotDy
+   = 0,0), maar het draaipunt is versleepbaar naar elke plek (ook buiten de
+   afbeelding) — handig om een kaart exact om een herkenningspunt te draaien.
+   Het draaipunt zelf is een vaste offset t.o.v. het middelpunt, uitgedrukt
+   in het ONGEROTEERDE lokale assenstelsel van de afbeelding, zodat het punt
+   mee verschuift/roteert/schaalt als de afbeelding dat doet. */
+function pivotWorldOf(o){
+  const cx=o.x+o.w/2, cy=o.y+o.h/2;
+  const dx=o.pivotDx||0, dy=o.pivotDy||0;
+  const rot=(o.rot||0)*Math.PI/180;
+  return { x: cx + dx*Math.cos(rot) - dy*Math.sin(rot), y: cy + dx*Math.sin(rot) + dy*Math.cos(rot) };
+}
+function localOffsetFromWorld(o, wx, wy){
+  const cx=o.x+o.w/2, cy=o.y+o.h/2;
+  const rot=(o.rot||0)*Math.PI/180;
+  const dx=wx-cx, dy=wy-cy;
+  return { dx: dx*Math.cos(rot)+dy*Math.sin(rot), dy: -dx*Math.sin(rot)+dy*Math.cos(rot) };
+}
+function rotateUnderlayAround(o, deltaDeg, pivot){
+  const rad=deltaDeg*Math.PI/180, cosT=Math.cos(rad), sinT=Math.sin(rad);
+  const cx=o.x+o.w/2, cy=o.y+o.h/2;
+  const dcx=cx-pivot.x, dcy=cy-pivot.y;
+  const newCx=pivot.x+dcx*cosT-dcy*sinT, newCy=pivot.y+dcx*sinT+dcy*cosT;
+  o.rot=(((o.rot||0)+deltaDeg)%360+360)%360;
+  o.x=newCx-o.w/2; o.y=newCy-o.h/2;
+}
+/* zelfde als handmatig aan de draaigreep trekken, maar in één vaste stap
+   (schuif/knoppen) — draait om het (evt. verplaatste) draaipunt i.p.v.
+   altijd om het middelpunt. */
+function rotateUnderlayBy(o, deltaDeg){ rotateUnderlayAround(o, deltaDeg, pivotWorldOf(o)); }
+const ROTATE_HANDLE_DIST = 40; // px op scherm, los van zoom
+function rotateHandlePos(o){
+  const pv=pivotWorldOf(o);
+  const rot=(o.rot||0)*Math.PI/180;
+  const D=ROTATE_HANDLE_DIST/S.zoom;
+  return { x: pv.x + Math.sin(rot)*D, y: pv.y - Math.cos(rot)*D };
+}
+function drawUnderlayHandles(o){
+  const pv=pivotWorldOf(o), rh=rotateHandlePos(o);
+  ctx.save();
+  ctx.strokeStyle='#3D9BE9'; ctx.lineWidth=1/S.zoom; ctx.setLineDash([4/S.zoom,3/S.zoom]);
+  ctx.beginPath(); ctx.moveTo(pv.x,pv.y); ctx.lineTo(rh.x,rh.y); ctx.stroke();
+  ctx.setLineDash([]);
+  // draaigreep (cirkel met draai-icoontje)
+  ctx.fillStyle='#3D9BE9';
+  ctx.beginPath(); ctx.arc(rh.x,rh.y,7/S.zoom,0,7); ctx.fill();
+  ctx.strokeStyle='#fff'; ctx.lineWidth=1.3/S.zoom;
+  ctx.beginPath(); ctx.arc(rh.x,rh.y,3.5/S.zoom,0.9*Math.PI,2.6*Math.PI); ctx.stroke();
+  // draaipunt (kruisje in een cirkeltje)
+  ctx.strokeStyle='#3D9BE9'; ctx.lineWidth=1.5/S.zoom;
+  const cr=6/S.zoom;
+  ctx.beginPath(); ctx.arc(pv.x,pv.y,cr,0,7); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(pv.x-cr,pv.y); ctx.lineTo(pv.x+cr,pv.y);
+  ctx.moveTo(pv.x,pv.y-cr); ctx.lineTo(pv.x,pv.y+cr);
+  ctx.stroke();
+  ctx.restore();
+}
+function drawRotateOverlay(){
+  const rd=S.rotateDrag; if(!rd) return;
+  const pv=rd.pivot;
+  const dist=Math.hypot(S.mouse.wx-pv.x, S.mouse.wy-pv.y);
+  const r=Math.min(70/S.zoom, Math.max(20/S.zoom, dist*0.6));
+  ctx.save();
+  ctx.strokeStyle='#3D9BE9'; ctx.lineWidth=1/S.zoom; ctx.setLineDash([4/S.zoom,3/S.zoom]);
+  ctx.beginPath(); ctx.moveTo(pv.x,pv.y); ctx.lineTo(pv.x+Math.cos(rd.startAngle)*r, pv.y+Math.sin(rd.startAngle)*r); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(pv.x,pv.y); ctx.lineTo(pv.x+Math.cos(rd.curAngle)*r, pv.y+Math.sin(rd.curAngle)*r); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  const a0=rd.startAngle, a1=rd.curAngle;
+  if(a1>=a0) ctx.arc(pv.x,pv.y,r,a0,a1); else ctx.arc(pv.x,pv.y,r,a1,a0);
+  ctx.stroke();
+  ctx.fillStyle='#3D9BE9';
+  ctx.beginPath(); ctx.arc(pv.x,pv.y,4/S.zoom,0,7); ctx.fill();
+  const mid=(a0+a1)/2;
+  const lx=pv.x+Math.cos(mid)*(r+18/S.zoom), ly=pv.y+Math.sin(mid)*(r+18/S.zoom);
+  ctx.font=`${13/S.zoom}px ui-monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  const sign=rd.liveDelta>=0?'+':'';
+  ctx.fillText(`${sign}${rd.liveDelta.toFixed(1)}° (totaal ${Math.round(rd.o.rot||0)}°)`, lx, ly);
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.restore();
+}
+
 /* graden-boog: toont bij het tekenen de hoek t.o.v. horizontaal, vanuit het startpunt */
 function drawAngleArc(x1,y1,x2,y2){
   const dx=x2-x1, dy=y2-y1;
@@ -1558,6 +1646,27 @@ cv.addEventListener('mousedown', e=>{
 
   switch(S.tool){
     case 'select': {
+      // draaigreep/draaipunt van de geselecteerde onderlaag kunnen buiten
+      // zijn bbox liggen — vóór de normale hit() checken (die alleen
+      // binnen de bbox van objecten zoekt).
+      if(S.sel && S.sel.type==='underlay'){
+        const rh=rotateHandlePos(S.sel);
+        if(Math.hypot(w.x-rh.x, w.y-rh.y) < 10/S.zoom){
+          pushUndo();
+          const pivot=pivotWorldOf(S.sel);
+          const startAngle=Math.atan2(w.y-pivot.y, w.x-pivot.x);
+          S.rotateDrag={o:S.sel, pivot, startAngle, curAngle:startAngle,
+            startRot:S.sel.rot||0, startCenter:{x:S.sel.x+S.sel.w/2, y:S.sel.y+S.sel.h/2},
+            prevAngle:startAngle, accumDeg:0, liveDelta:0};
+          return;
+        }
+        const pv=pivotWorldOf(S.sel);
+        if(Math.hypot(w.x-pv.x, w.y-pv.y) < 9/S.zoom){
+          pushUndo();
+          S.drag={o:S.sel, mode:'pivot'};
+          return;
+        }
+      }
       const o=hit(w.x,w.y);
       if(o){
         // handle-check eindpunten (muur/lijn/pijl/maatlijn/wbdbo)
@@ -1684,6 +1793,28 @@ cv.addEventListener('mousemove', e=>{
     recomputeGeoref(); refreshGeorefProps(); draw();
     return;
   }
+  if(S.rotateDrag){
+    const rd=S.rotateDrag, o=rd.o, pv=rd.pivot;
+    const curAngle=Math.atan2(w.y-pv.y, w.x-pv.x);
+    let diff=curAngle-rd.prevAngle;
+    if(diff>Math.PI) diff-=2*Math.PI;
+    if(diff<-Math.PI) diff+=2*Math.PI;
+    rd.accumDeg+=diff*180/Math.PI;
+    rd.prevAngle=curAngle;
+    rd.curAngle=curAngle;
+    let deltaDeg=rd.accumDeg;
+    if(e.shiftKey) deltaDeg=Math.round(deltaDeg/5)*5;
+    rd.liveDelta=deltaDeg;
+    const deltaRad=deltaDeg*Math.PI/180;
+    const cosT=Math.cos(deltaRad), sinT=Math.sin(deltaRad);
+    const dcx=rd.startCenter.x-pv.x, dcy=rd.startCenter.y-pv.y;
+    const newCx=pv.x + dcx*cosT - dcy*sinT;
+    const newCy=pv.y + dcx*sinT + dcy*cosT;
+    o.rot=((rd.startRot+deltaDeg)%360+360)%360;
+    o.x=newCx-o.w/2; o.y=newCy-o.h/2;
+    draw();
+    return;
+  }
   if(lastPan){
     S.panX+=sx-lastPan.sx; S.panY+=sy-lastPan.sy;
     lastPan={sx,sy}; draw(); return;
@@ -1724,6 +1855,11 @@ cv.addEventListener('mousemove', e=>{
       else { S.drag.o.x2=sp.x; S.drag.o.y2=sp.y; }
       refreshProps(); draw();
     }
+    if(S.drag.mode==='pivot'){
+      const off=localOffsetFromWorld(S.drag.o, w.x, w.y);
+      S.drag.o.pivotDx=off.dx; S.drag.o.pivotDy=off.dy;
+      draw();
+    }
     if(S.drag.mode==='scale'){
       const o=S.drag.o, b0=S.drag.b0, og=S.drag.orig;
       const fx=Math.max(0.02,(w.x-b0.x)/Math.max(1,b0.w));
@@ -1733,6 +1869,12 @@ cv.addEventListener('mousemove', e=>{
         case 'underlay':
           if(e.shiftKey){ o.w=Math.max(20,og.w*fx); o.h=Math.max(20,og.h*fy); }
           else { o.w=Math.max(20,og.w*f); o.h=og.h*(o.w/og.w); }
+          // draaipunt (offset t.o.v. middelpunt) meeschalen zodat het op
+          // dezelfde plek op de kaart blijft staan i.p.v. verschuift.
+          if(og.pivotDx || og.pivotDy){
+            o.pivotDx=(og.pivotDx||0)*(o.w/og.w);
+            o.pivotDy=(og.pivotDy||0)*(o.h/og.h);
+          }
           break;
         case 'erase': case 'fill':
           o.w=Math.max(4,og.w*fx); o.h=Math.max(4,og.h*fy); break;
@@ -1785,6 +1927,7 @@ addEventListener('mouseup', ()=>{
   S.mouse.down=false;
   lastPan=null;
   if(S.georefDrag){ S.georefDrag=null; }
+  if(S.rotateDrag){ S.rotateDrag=null; showProps(); draw(); }
   if(S.drag){ S.drag=null; }
   if(S.gum){ S.gum=null; updCount(); draw(); }
   if(!S.temp) return;
@@ -3148,7 +3291,9 @@ addEventListener('keydown', e=>{
     else delSel();
   }
   if(e.key.toLowerCase()==='r' && S.sel){
-    if(S.sel.rot!==undefined){
+    if(S.sel.type==='underlay'){
+      pushUndo(); rotateUnderlayBy(S.sel,90); showProps(); draw();
+    } else if(S.sel.rot!==undefined){
       pushUndo(); S.sel.rot=((S.sel.rot||0)+90)%360; refreshProps(); draw();
     } else if(isSeg(S.sel)){
       pushUndo(); rotateSeg(S.sel,90); draw();
@@ -3339,14 +3484,16 @@ function showProps(){
     h+=`<div class="pfield" style="font-size:11px;color:var(--ink-dim)">${S.georef.transform
         ? 'Verschuift, draait en schaalt deze kaart automatisch op basis van 2 herkenbare punten met bekende RD-coördinaat — handig om meerdere kaarten van hetzelfde gebied precies op elkaar te laten aansluiten.'
         : 'Georefereer eerst een referentiekaart (gereedschap "Georefereren", ≥3 RD-punten) — daarna kun je andere kaarten hierop uitlijnen.'}</div>`;
-    h+=fld(`Rechtzetten (huidig: ${(o.rot||0).toFixed(1)}°)`,
+    h+=`<div class="prow" style="margin-bottom:10px">
+      <button class="pbtn" id="pPivotReset">🎯 Draaipunt naar midden</button></div>`;
+    h+=`<div class="pfield" style="font-size:11px;color:var(--ink-dim)">Sleep het blauwe kruisje op de tekening om het draaipunt te verplaatsen (ook buiten de kaart) en sleep de draaigreep eromheen om te draaien — de graden verschijnen dan live. Blauwe hoekgreep rechtsonder = schalen met behoud van verhouding (Shift = vrij uitrekken).</div>`;
+    h+=fld(`Rotatie t.o.v. draaipunt (huidig: ${(o.rot||0).toFixed(1)}°)`,
       `<div class="prow">
         <button class="pbtn" id="pRotF1">−1°</button>
         <button class="pbtn" id="pRotF2">−0,2°</button>
         <button class="pbtn" id="pRotF3">+0,2°</button>
         <button class="pbtn" id="pRotF4">+1°</button>
       </div>`);
-    h+=`<div class="pfield" style="font-size:11px;color:var(--ink-dim)">Scheef ingescande tekening? Gebruik de fijnknoppen hierboven of de rotatieschuif hieronder. Blauwe hoekgreep = schalen.</div>`;
     h+=`<div class="prow" style="margin-bottom:10px">
       <button class="pbtn" id="pBack">Naar achtergrond</button></div>`;
   }
@@ -3374,7 +3521,12 @@ function showProps(){
   });
   bind('pEraseC', e=>{ o.color=e.target.value; draw(); });
   bind('pLegT', e=>{ o.title=e.target.value; draw(); });
-  bind('pRot', e=>{ o.rot=parseInt(e.target.value); draw(); });
+  bind('pRot', e=>{
+    const v=parseInt(e.target.value);
+    if(o.type==='underlay') rotateUnderlayBy(o, v-(o.rot||0));
+    else o.rot=v;
+    draw();
+  });
   bind('pText', e=>{ o.text=e.target.value; draw(); });
   bind('pSize', e=>{ o.size=parseInt(e.target.value)||o.size; draw(); });
   bind('pOpa', e=>{
@@ -3383,14 +3535,20 @@ function showProps(){
     if(row){ row.querySelector('.layerOpa').value=e.target.value; row.querySelector('.layerOpaVal').textContent=e.target.value+'%'; }
     draw();
   });
-  bind('pUW', e=>{ const nw=parseFloat(e.target.value); if(nw>10){ const r=o.h/o.w; o.w=nw; o.h=nw*r; draw(); }});
+  const scaleUnderlayTo=(nw)=>{
+    const f=nw/o.w, r=o.h/o.w;
+    o.w=nw; o.h=nw*r;
+    if(o.pivotDx || o.pivotDy){ o.pivotDx=(o.pivotDx||0)*f; o.pivotDy=(o.pivotDy||0)*f; }
+    draw();
+  };
+  bind('pUW', e=>{ const nw=parseFloat(e.target.value); if(nw>10) scaleUnderlayTo(nw); });
   bind('pUM', e=>{
     const mtr=parseFloat(String(e.target.value).replace(',','.'));
-    if(mtr>0.05){ const r=o.h/o.w; o.w=mtr*S.scale; o.h=o.w*r; draw(); }
+    if(mtr>0.05) scaleUnderlayTo(mtr*S.scale);
   });
   const click=(id,fn)=>{ const el=document.getElementById(id); if(el) el.addEventListener('click',fn); };
-  click('pRotL', ()=>{ pushUndo(); o.rot=((o.rot||0)+270)%360; showProps(); draw(); });
-  click('pRotR', ()=>{ pushUndo(); o.rot=((o.rot||0)+90)%360; showProps(); draw(); });
+  click('pRotL', ()=>{ pushUndo(); if(o.type==='underlay') rotateUnderlayBy(o,-90); else o.rot=((o.rot||0)+270)%360; showProps(); draw(); });
+  click('pRotR', ()=>{ pushUndo(); if(o.type==='underlay') rotateUnderlayBy(o,90); else o.rot=((o.rot||0)+90)%360; showProps(); draw(); });
   click('pSegL45', ()=>{ pushUndo(); rotateSeg(o,-45); showProps(); draw(); });
   click('pSegR45', ()=>{ pushUndo(); rotateSeg(o,45); showProps(); draw(); });
   click('pSeg90',  ()=>{ pushUndo(); rotateSeg(o,90); showProps(); draw(); });
@@ -3419,10 +3577,11 @@ function showProps(){
   });
   click('pEraseAuto', ()=>{ delete o.color; showProps(); draw(); });
   click('pLegR', ()=>{ pushUndo(); o.items=buildLegendItems(); draw(); });
-  const fine=(id,d)=>click(id, ()=>{ o.rot=((o.rot||0)+d+360)%360; showProps(); draw(); });
+  const fine=(id,d)=>click(id, ()=>{ pushUndo(); rotateUnderlayBy(o,d); showProps(); draw(); });
   fine('pRotF1',-1); fine('pRotF2',-0.2); fine('pRotF3',0.2); fine('pRotF4',1);
   click('pBack', ()=>{ pushUndo();
     S.objects=S.objects.filter(x=>x!==o); S.objects.unshift(o); refreshUnderlayList(); draw(); });
+  click('pPivotReset', ()=>{ pushUndo(); o.pivotDx=0; o.pivotDy=0; draw(); });
 }
 function showExportProps(){
   propBody.innerHTML=`
