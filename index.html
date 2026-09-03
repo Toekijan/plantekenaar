@@ -299,7 +299,7 @@
   <div id="hint"></div>
 
   <div id="georefInput">
-    <div class="glabel">Referentiepunt <span id="georefInputNum">1</span> — RD-coördinaten</div>
+    <div class="glabel" id="georefInputLabel">Referentiepunt <span id="georefInputNum">1</span> — RD-coördinaten</div>
     <label>X (m) <span class="gomuted" style="font-weight:400">0 – 300.000</span><input id="georefInputX" type="number" step="0.01" placeholder="bijv. 121000.00"></label>
     <label>Y (m) <span class="gomuted" style="font-weight:400">300.000 – 650.000</span><input id="georefInputY" type="number" step="0.01" placeholder="bijv. 487000.00"></label>
     <div id="georefInputErr"></div>
@@ -322,6 +322,11 @@
 
 <!-- ═══ PROPERTIES ═══ -->
 <div id="props">
+  <div id="underlayLayers" style="display:none; margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line)">
+    <h3>Kaartlagen</h3>
+    <div style="font-size:11px;color:var(--ink-dim);margin-bottom:8px">Bovenste kaart bovenaan · klik een naam om te selecteren · schuif voor transparantie per kaart</div>
+    <div id="underlayLayersBody"></div>
+  </div>
   <h3>Eigenschappen</h3>
   <div id="propBody">
     <div id="noSel">
@@ -428,7 +433,7 @@ const S = {
   drag: null,             // sleepstatus
   undo: [], redo: [],
   gum: null, gumSize: 14, gumColor: 'auto', hideGumCursor: false,
-  gridTop: false, exportRect: null, calibTarget: null,
+  gridTop: false, exportRect: null, calibTarget: null, alignTarget: null,
   ui: { pinned: ['select','pan'] },
   pdfDoc: null, pdfObj: null,
   georef: {
@@ -1643,6 +1648,7 @@ cv.addEventListener('mousedown', e=>{
       break;
     }
     case 'georef': handleGeorefClick(sx, sy, w); break;
+    case 'align': handleAlignClick(sx, sy, w); break;
     case 'dim': {
       if(!S.temp) S.temp={kind:'dim', x1:wp.x,y1:wp.y,x2:wp.x,y2:wp.y};
       else {
@@ -2658,6 +2664,7 @@ function closeGeorefInput(){
   georefPendingPoint=null;
 }
 function commitGeorefInput(){
+  if(alignPendingPoint) return commitAlignInput();
   if(!georefPendingPoint) return;
   const x=parseFloat(String(georefInputX.value).replace(',','.'));
   const y=parseFloat(String(georefInputY.value).replace(',','.'));
@@ -2671,6 +2678,7 @@ function commitGeorefInput(){
   hint.textContent='Referentiepunt vastgelegd. Klik het volgende punt, of sleep/bewerk bestaande punten.';
 }
 function cancelGeorefInput(){
+  if(alignPendingPoint) return cancelAlignInput();
   if(!georefPendingPoint) return;
   // nieuw, nog niet ingevulde punten helemaal weer weggooien
   if(georefPendingPoint.rdX==null){
@@ -2688,6 +2696,113 @@ georefInputEl.addEventListener('keydown', e=>{
   if(e.key==='Escape'){ e.preventDefault(); cancelGeorefInput(); }
   e.stopPropagation();
 });
+
+/* ═════════ KAART UITLIJNEN OP RD (per onderlaag, 2 punten) ═════════
+   Lijnt één specifieke onderlaag (afbeelding/PDF-uitsnede) uit op RD-coördinaten:
+   2 herkenningspunten op díe kaart + hun RD-coördinaat leveren een similariteits-
+   transformatie (rotatie + uniforme schaal + verschuiving) op t.o.v. de bestaande
+   georeferentie (S.georef.transform, elders op de tekening vastgelegd), die
+   vervolgens alleen op déze onderlaag wordt toegepast. Zo eindigen meerdere los
+   ingeladen kaarten allemaal op dezelfde schaal/positie/rotatie en vallen ze
+   over elkaar heen. */
+let alignPendingPoint=null; // punt (op de uit te lijnen onderlaag) dat op RD-invoer wacht
+let alignState=null;        // {targetId, pts:[{wx,wy,rdX,rdY}, ...]} tijdens het uitlijnen
+
+function handleAlignClick(sx, sy, w){
+  if(alignPendingPoint) return; // eerst huidige invoer afronden of annuleren
+  if(!S.georef.transform){
+    hint.textContent='Georefereer eerst een referentiekaart (gereedschap "Georefereren", ≥3 RD-punten) voordat je een andere kaart kunt uitlijnen.';
+    return;
+  }
+  const target=S.objects.find(o=>o.id===S.alignTarget && o.type==='underlay');
+  if(!target){
+    hint.textContent='Selecteer eerst een onderlaag en klik op "Uitlijnen op RD" in het paneel.';
+    return;
+  }
+  if(!alignState || alignState.targetId!==target.id) alignState={targetId:target.id, pts:[]};
+  if(alignState.pts.length>=2){
+    hint.textContent='Er zijn al 2 uitlijnpunten ingevoerd voor deze kaart.';
+    return;
+  }
+  const pt={wx:w.x, wy:w.y, rdX:null, rdY:null};
+  alignState.pts.push(pt);
+  openAlignInput(sx, sy, pt, alignState.pts.length);
+}
+
+function openAlignInput(sx, sy, pt, num){
+  alignPendingPoint=pt;
+  document.getElementById('georefInputLabel').textContent=`Uitlijnpunt ${num}/2 op deze kaart — RD-coördinaten`;
+  georefInputX.value=''; georefInputY.value='';
+  georefInputErr.textContent='';
+  const wrapEl=wrap.getBoundingClientRect();
+  let left=sx+14, top=sy+14;
+  if(left+200>wrapEl.width) left=Math.max(4, sx-210);
+  if(top+180>wrapEl.height) top=Math.max(4, sy-190);
+  georefInputEl.style.left=left+'px'; georefInputEl.style.top=top+'px';
+  georefInputEl.style.display='block';
+  setTimeout(()=>georefInputX.focus(),0);
+}
+function commitAlignInput(){
+  if(!alignPendingPoint) return;
+  const x=parseFloat(String(georefInputX.value).replace(',','.'));
+  const y=parseFloat(String(georefInputY.value).replace(',','.'));
+  const v=PTGeoRef.validateRD(x, y);
+  if(!v.valid){ georefInputErr.textContent=v.errors.join(' '); return; }
+  alignPendingPoint.rdX=x; alignPendingPoint.rdY=y;
+  georefInputEl.style.display='none';
+  alignPendingPoint=null;
+  document.getElementById('georefInputLabel').innerHTML='Referentiepunt <span id="georefInputNum">1</span> — RD-coördinaten';
+  if(alignState.pts.length>=2){
+    const doneState=alignState;
+    alignState=null;
+    setTool('select');
+    applyAlignment(doneState);
+  } else {
+    hint.textContent='Klik het 2e uitlijnpunt op deze kaart en voer de RD-coördinaat in.';
+  }
+}
+function cancelAlignInput(){
+  if(!alignPendingPoint) return;
+  alignState.pts=alignState.pts.filter(p=>p!==alignPendingPoint);
+  georefInputEl.style.display='none';
+  alignPendingPoint=null;
+  document.getElementById('georefInputLabel').innerHTML='Referentiepunt <span id="georefInputNum">1</span> — RD-coördinaten';
+  hint.textContent='Uitlijnen geannuleerd.';
+  draw();
+}
+function applyAlignment(state){
+  const target=S.objects.find(o=>o.id===state.targetId && o.type==='underlay');
+  if(!target || !S.georef.transform){ draw(); return; }
+  const [p1,p2]=state.pts;
+  const q1=PTGeoRef.rdToWorld(S.georef.transform, p1.rdX, p1.rdY);
+  const q2=PTGeoRef.rdToWorld(S.georef.transform, p2.rdX, p2.rdY);
+  const oldDx=p2.wx-p1.wx, oldDy=p2.wy-p1.wy;
+  const newDx=q2.x-q1.x, newDy=q2.y-q1.y;
+  const oldLen=Math.hypot(oldDx,oldDy), newLen=Math.hypot(newDx,newDy);
+  if(oldLen<1e-6 || newLen<1e-6){
+    hint.textContent='Uitlijnen mislukt: de 2 punten liggen te dicht bij elkaar (of hebben dezelfde RD-coördinaat).';
+    draw(); return;
+  }
+  const s=newLen/oldLen;
+  const dTheta=Math.atan2(newDy,newDx)-Math.atan2(oldDy,oldDx);
+  const cosT=Math.cos(dTheta), sinT=Math.sin(dTheta);
+  const xf=(p)=>{
+    const dx=p.x-p1.wx, dy=p.y-p1.wy;
+    return { x: q1.x + s*(dx*cosT - dy*sinT), y: q1.y + s*(dx*sinT + dy*cosT) };
+  };
+  pushUndo();
+  // let op: de S.georef.points NIET meeverplaatsen, ook niet als ze binnen de
+  // (oude) bbox van deze onderlaag vallen — bij het uitlijnen van meerdere
+  // kaarten van hetzelfde gebied overlappen de bounding boxes juist per
+  // ontwerp, terwijl de referentiepunten bij een ándere (de reeds
+  // gegeoreferereerde) onderlaag horen en dus moeten blijven staan.
+  const c2=xf({x:target.x+target.w/2, y:target.y+target.h/2});
+  target.w*=s; target.h*=s;
+  target.x=c2.x-target.w/2; target.y=c2.y-target.h/2;
+  target.rot=(((target.rot||0)+dTheta*180/Math.PI)%360+360)%360;
+  showProps(); draw();
+  hint.textContent=`Kaart uitgelijnd op RD (×${s.toFixed(3)} schaal, ${(dTheta*180/Math.PI).toFixed(1)}° rotatie).`;
+}
 
 function removeGeorefPoint(pt){
   S.georef.points=S.georef.points.filter(p=>p!==pt);
@@ -3015,6 +3130,10 @@ addEventListener('keydown', e=>{
       if(georefPendingPoint){ cancelGeorefInput(); return; }
       S.georefSel=null; showProps(); draw(); return;
     }
+    if(S.tool==='align'){
+      if(alignPendingPoint){ cancelAlignInput(); return; }
+      alignState=null; setTool('select'); return;
+    }
     if(S.tool==='exportarea' && S.exportRect){ S.exportRect=null; showProps(); }
     cancelTemp(); S.sel=null; showProps(); draw();
   }
@@ -3071,7 +3190,49 @@ function dupSel(){
 const propBody=document.getElementById('propBody');
 function fld(label, inner){ return `<div class="pfield"><label>${label}</label>${inner}</div>`; }
 
+/* ═════════ KAARTLAGEN (onderlagen-overzicht) ═════════
+   Bij overlappende onderlagen (bijv. meerdere uitgelijnde historische kaarten
+   over elkaar) selecteert een klik op de tekening altijd alleen de bovenste
+   (zie hit()) — de eronder liggende kaarten zijn dan niet meer aan te klikken.
+   Deze lijst toont alle onderlagen ongeacht stapelvolgorde, met een eigen
+   transparantie-schuif per kaart, zodat je ze allemaal individueel kunt laten
+   vervagen om ze te vergelijken. */
+function refreshUnderlayList(){
+  const box=document.getElementById('underlayLayers');
+  const body=document.getElementById('underlayLayersBody');
+  const layers=S.objects.filter(o=>o.type==='underlay');
+  if(layers.length<2){ box.style.display='none'; body.innerHTML=''; return; }
+  box.style.display='block';
+  // array-volgorde = tekenvolgorde (zie draw()/hit()): laatste in de array = bovenste kaart
+  const top2bottom=[...layers].reverse();
+  body.innerHTML=top2bottom.map((o,i)=>{
+    const n=i+1, sel=S.sel===o;
+    return `<div class="prow" data-layer-id="${o.id}" style="align-items:center; gap:6px; margin-bottom:6px;">
+      <span style="flex:0 0 auto; font-size:11px; color:var(--ink-dim); width:14px;">${n}</span>
+      <span class="layerLabel" style="flex:1 1 auto; font-size:12px; cursor:pointer; overflow:hidden;
+        text-overflow:ellipsis; white-space:nowrap; ${sel?'font-weight:600;color:var(--ink)':'color:var(--ink-dim)'}"
+        title="Klik om deze kaart te selecteren">${sel?'▶ ':''}Kaart ${n}</span>
+      <input class="layerOpa" type="range" min="10" max="100" value="${Math.round((o.opacity??1)*100)}"
+        style="width:70px;" title="Transparantie">
+      <span class="layerOpaVal" style="flex:0 0 auto; font-size:10px; color:var(--ink-dim); width:30px; text-align:right;">${Math.round((o.opacity??1)*100)}%</span>
+    </div>`;
+  }).join('');
+  body.querySelectorAll('[data-layer-id]').forEach(row=>{
+    const o=S.objects.find(x=>x.id===parseInt(row.dataset.layerId));
+    if(!o) return;
+    row.querySelector('.layerLabel').addEventListener('click', ()=>{ S.sel=o; showProps(); draw(); });
+    const rng=row.querySelector('.layerOpa'), val=row.querySelector('.layerOpaVal');
+    rng.addEventListener('input', e=>{
+      o.opacity=parseInt(e.target.value)/100;
+      val.textContent=e.target.value+'%';
+      if(S.sel===o){ const pOpaEl=document.getElementById('pOpa'); if(pOpaEl) pOpaEl.value=e.target.value; }
+      draw();
+    });
+  });
+}
+
 function showProps(){
+  refreshUnderlayList();
   const o=S.sel;
   if(!o){
     if(S.tool==='gum'){ showGumProps(); return; }
@@ -3173,6 +3334,11 @@ function showProps(){
     h+=fld('Breedte (m) — directe maat', `<input id="pUM" type="number" step="0.01" min="0.1" value="${(o.w/S.scale).toFixed(2)}">`);
     h+=`<div class="prow" style="margin-bottom:10px">
       <button class="pbtn" id="pCalib">📐 Kalibreren (2 punten)</button></div>`;
+    h+=`<div class="prow" style="margin-bottom:4px">
+      <button class="pbtn" id="pAlign"${S.georef.transform?'':' disabled'}>🌐 Uitlijnen op RD (2 punten)</button></div>`;
+    h+=`<div class="pfield" style="font-size:11px;color:var(--ink-dim)">${S.georef.transform
+        ? 'Verschuift, draait en schaalt deze kaart automatisch op basis van 2 herkenbare punten met bekende RD-coördinaat — handig om meerdere kaarten van hetzelfde gebied precies op elkaar te laten aansluiten.'
+        : 'Georefereer eerst een referentiekaart (gereedschap "Georefereren", ≥3 RD-punten) — daarna kun je andere kaarten hierop uitlijnen.'}</div>`;
     h+=fld(`Rechtzetten (huidig: ${(o.rot||0).toFixed(1)}°)`,
       `<div class="prow">
         <button class="pbtn" id="pRotF1">−1°</button>
@@ -3211,7 +3377,12 @@ function showProps(){
   bind('pRot', e=>{ o.rot=parseInt(e.target.value); draw(); });
   bind('pText', e=>{ o.text=e.target.value; draw(); });
   bind('pSize', e=>{ o.size=parseInt(e.target.value)||o.size; draw(); });
-  bind('pOpa', e=>{ o.opacity=parseInt(e.target.value)/100; draw(); });
+  bind('pOpa', e=>{
+    o.opacity=parseInt(e.target.value)/100;
+    const row=document.querySelector(`#underlayLayersBody [data-layer-id="${o.id}"]`);
+    if(row){ row.querySelector('.layerOpa').value=e.target.value; row.querySelector('.layerOpaVal').textContent=e.target.value+'%'; }
+    draw();
+  });
   bind('pUW', e=>{ const nw=parseFloat(e.target.value); if(nw>10){ const r=o.h/o.w; o.w=nw; o.h=nw*r; draw(); }});
   bind('pUM', e=>{
     const mtr=parseFloat(String(e.target.value).replace(',','.'));
@@ -3228,6 +3399,16 @@ function showProps(){
     setTool('calib');
     hint.textContent='Kalibreren van deze uitsnede/onderlaag: klik 2 punten met bekende afstand en voer de meters in.';
   });
+  click('pAlign', ()=>{
+    if(!S.georef.transform){
+      hint.textContent='Georefereer eerst een referentiekaart (gereedschap "Georefereren", ≥3 RD-punten) voordat je deze kaart kunt uitlijnen.';
+      return;
+    }
+    S.alignTarget=o.id;
+    alignState={targetId:o.id, pts:[]};
+    setTool('align');
+    hint.textContent='Klik het 1e herkenningspunt op deze kaart en voer de RD-coördinaat in.';
+  });
   click('pFlip', ()=>{ pushUndo(); o.flip=!o.flip; draw(); });
   click('pDel', delSel);
   click('pDup', dupSel);
@@ -3241,7 +3422,7 @@ function showProps(){
   const fine=(id,d)=>click(id, ()=>{ o.rot=((o.rot||0)+d+360)%360; showProps(); draw(); });
   fine('pRotF1',-1); fine('pRotF2',-0.2); fine('pRotF3',0.2); fine('pRotF4',1);
   click('pBack', ()=>{ pushUndo();
-    S.objects=S.objects.filter(x=>x!==o); S.objects.unshift(o); draw(); });
+    S.objects=S.objects.filter(x=>x!==o); S.objects.unshift(o); refreshUnderlayList(); draw(); });
 }
 function showExportProps(){
   propBody.innerHTML=`
@@ -3302,6 +3483,7 @@ const HINTS={
   dim:'Klik beginpunt en eindpunt · toont maat in meters op basis van de schaal',
   calib:'Schaal instellen: klik 2 punten met bekende afstand op de tekening (bijv. een maatlijn op de PDF) en voer de meters in',
   georef:'Klik tot 4 referentiepunten en voer per punt de RD X/Y-coördinaat in · sleep een marker om te verplaatsen · Ctrl+klik = kopieer coördinaten',
+  align:'Klik 2 herkenningspunten op de geselecteerde kaart en voer per punt de RD-coördinaat in — de kaart wordt automatisch verschoven, gedraaid en geschaald op basis van de bestaande georeferentie',
   line:'Klik = punt · klik = volgend punt · rechtsklik of Esc = stoppen · vrije hoek (360°) tenzij "Hoek snappen" aan staat, Shift keert dit tijdelijk om · "Vrije hand" onderin = slepen voor een handgetekende lijn',
   pencil:'Sleep om uit de vrije hand te tekenen',
   rect:'Sleep om een rechthoek te tekenen',
@@ -3342,6 +3524,7 @@ function setTool(t){
   if(t==='trim'){ S.trimEdges=new Set(); S.trimPhase='edges'; S.trimHover=null; S.trimPending=null; }
   else if(prev==='trim'){ S.trimEdges=new Set(); S.trimHover=null; S.trimPending=null; }
   if(prev==='georef' && t!=='georef'){ closeGeorefInput(); S.georefSel=null; S.georefDrag=null; }
+  if(prev==='align' && t!=='align'){ cancelAlignInput(); alignState=null; }
   cv.style.cursor = t==='pan'?'grab' : t==='select'?'default' : t==='trim'?TRIM_CURSOR : 'crosshair';
   hint.textContent = HINTS[t] || `Klik om ${(SYMBOL_NAMES[t]||'symbool').toLowerCase()} te plaatsen · R = draaien · hoekgreep = schalen`;
   showProps();
