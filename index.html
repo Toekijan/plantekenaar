@@ -37,6 +37,7 @@
   #logo span{color:var(--accent);}
   .tb{padding:6px 10px; border-radius:6px; font-size:12.5px; white-space:nowrap;}
   .tb:hover{background:var(--chrome3);}
+  .tb.on{background:#1c3a52; border-color:var(--accent);}
   .tb:disabled{opacity:.35; cursor:default;}
   .sep{width:1px; height:22px; background:var(--line); margin:0 2px; flex:none;}
   #statechips{display:flex; gap:4px; margin-left:auto; align-items:center;}
@@ -392,6 +393,7 @@
     <b>3D-WEERGAVE</b>
     <label>Verdiepingshoogte <input id="threeH" type="number" min="2" max="5" step="0.1" value="2.6"> m</label>
     <label><input id="threeUnder" type="checkbox" checked> Plattegrond op de vloer</label>
+    <button class="tb" id="threePanBtn" title="Aan/uit: sleep dan met de linkermuisknop om te pannen (in plaats van te draaien)">🖐 Pannen</button>
     <button class="tb" id="threeCropBtn">▭ Uitsnede</button>
     <button class="tb" id="threePng">⬇ PNG</button>
     <button class="tb" id="threePrint">🖨 Afdrukken</button>
@@ -399,7 +401,7 @@
   </div>
   <canvas id="threeCv"></canvas>
   <div id="threeCrop"></div>
-  <div id="threeHint">Slepen = draaien · Shift+slepen of rechter muisknop = pannen · scrollen = zoomen</div>
+  <div id="threeHint">Slepen = draaien · Shift+slepen, middelste/rechter muisknop, of 🖐 Pannen = pannen · scrollen/knijpen = zoomen, tweevingerig vegen = pannen</div>
 </div>
 
 <script>
@@ -432,9 +434,9 @@ const S = {
   temp: null,             // tool-in-uitvoering (muur/witvlak/maatlijn)
   drag: null,             // sleepstatus
   undo: [], redo: [],
-  gum: null, gumSize: 14, gumColor: 'auto', hideGumCursor: false,
+  gum: null, gumSize: 14,
   gridTop: false, exportRect: null, calibTarget: null, alignTarget: null,
-  ui: { pinned: ['select','pan'] },
+  ui: { pinned: [] },
   pdfDoc: null, pdfObj: null,
   georef: {
     points: [],        // {id, wx, wy, rdX, rdY} — wx/wy in wereld-/documentcoördinaten (px)
@@ -627,7 +629,7 @@ function draw(){
   if(S.tool==='trim' || S.trimHover) drawTrimOverlay();
   if(S.tool==='georef') drawGeorefMarkers();
   if(S.georef.lookupPoint) drawGeorefLookupMarker();
-  if(S.tool==='gum' && !S.hideGumCursor){
+  if(S.tool==='gum'){
     const r=S.gum ? S.gum.r : S.gumSize/S.zoom;
     ctx.save();
     ctx.strokeStyle='#D62828'; ctx.lineWidth=1.4/S.zoom;
@@ -666,6 +668,32 @@ function gridLines(vw, step){
   ctx.stroke();
 }
 
+/* tekent een witvlak/gum-vorm zó dat het raster erdoorheen zichtbaar blijft: de vorm wordt
+   eerst geïsoleerd op een offscreen canvas getekend (zodat onderliggende inhoud buiten de
+   vorm niet wordt geraakt), waarna het raster er met 'source-atop' overheen wordt gecomposit —
+   dat kleurt alléén de zojuist getekende pixels, dus precies de vorm van de gum-streek/het kader */
+function drawWithGridReveal(drawShapeFn, bbox){
+  if(!S.grid || exportMode || bbox.w<=0 || bbox.h<=0){ drawShapeFn(); return; }
+  const pad=4/S.zoom;
+  const bx=bbox.x-pad, by=bbox.y-pad, bw=bbox.w+2*pad, bh=bbox.h+2*pad;
+  const scale=Math.max(1, S.zoom*devicePixelRatio);
+  const oc=document.createElement('canvas');
+  oc.width=Math.max(1, Math.round(bw*scale));
+  oc.height=Math.max(1, Math.round(bh*scale));
+  const octx=oc.getContext('2d');
+  octx.scale(scale,scale);
+  octx.translate(-bx,-by);
+  const saved=ctx;
+  ctx=octx;
+  drawShapeFn();
+  ctx.save();
+  ctx.globalCompositeOperation='source-atop';
+  drawGrid({x1:bx,y1:by,x2:bx+bw,y2:by+bh});
+  ctx.restore();
+  ctx=saved;
+  ctx.drawImage(oc, bx, by, bw, bh);
+}
+
 function drawObj(o){
   switch(o.type){
     case 'underlay': if(o.img){ ctx.save(); ctx.globalAlpha=o.opacity??1;
@@ -675,7 +703,9 @@ function drawObj(o){
         ctx.drawImage(o.img, -o.w/2, -o.h/2, o.w, o.h);
       } else ctx.drawImage(o.img,o.x,o.y,o.w,o.h);
       ctx.restore(); } break;
-    case 'erase': ctx.fillStyle=o.color||paperC(); ctx.fillRect(o.x,o.y,o.w,o.h); break;
+    case 'erase': drawWithGridReveal(
+      ()=>{ ctx.fillStyle=o.color||paperC(); ctx.fillRect(o.x,o.y,o.w,o.h); },
+      {x:o.x,y:o.y,w:o.w,h:o.h}); break;
     case 'mask': drawMask(o); break;
     case 'fill': ctx.fillStyle=o.customColor||stateColor(o.state); ctx.fillRect(o.x,o.y,o.w,o.h); break;
     case 'legend': drawLegend(o); break;
@@ -775,18 +805,23 @@ function drawCircleShape(o){
 }
 function drawMask(o){
   if(!o.pts || !o.pts.length) return;
-  ctx.save();
   const col=o.color || paperC();
-  ctx.strokeStyle=col; ctx.fillStyle=col;
-  ctx.lineWidth=o.r*2; ctx.lineCap='round'; ctx.lineJoin='round';
-  if(o.pts.length===1){
-    ctx.beginPath(); ctx.arc(o.pts[0].x,o.pts[0].y,o.r,0,7); ctx.fill();
-  } else {
-    ctx.beginPath(); ctx.moveTo(o.pts[0].x,o.pts[0].y);
-    for(let i=1;i<o.pts.length;i++) ctx.lineTo(o.pts[i].x,o.pts[i].y);
-    ctx.stroke();
-  }
-  ctx.restore();
+  const shape=()=>{
+    ctx.save();
+    ctx.strokeStyle=col; ctx.fillStyle=col;
+    ctx.lineWidth=o.r*2; ctx.lineCap='round'; ctx.lineJoin='round';
+    if(o.pts.length===1){
+      ctx.beginPath(); ctx.arc(o.pts[0].x,o.pts[0].y,o.r,0,7); ctx.fill();
+    } else {
+      ctx.beginPath(); ctx.moveTo(o.pts[0].x,o.pts[0].y);
+      for(let i=1;i<o.pts.length;i++) ctx.lineTo(o.pts[i].x,o.pts[i].y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  };
+  let x1=1e9,y1=1e9,x2=-1e9,y2=-1e9;
+  o.pts.forEach(p=>{ x1=Math.min(x1,p.x); y1=Math.min(y1,p.y); x2=Math.max(x2,p.x); y2=Math.max(y2,p.y); });
+  drawWithGridReveal(shape, {x:x1-o.r, y:y1-o.r, w:(x2-x1)+o.r*2, h:(y2-y1)+o.r*2});
 }
 
 function drawWbdbo(o){
@@ -2271,31 +2306,14 @@ function pasteClipboardAt(tx, ty){
 }
 
 /* ═════════ GUM ═════════ */
-/* Kleur bemonsteren rond een schermpunt: meest voorkomende kleur in een 15×15-vlak,
-   zodat de gum de achtergrondkleur van de tekening aanneemt en de bewerking onzichtbaar is. */
-function sampleBgColor(sx,sy){
-  try{
-    S.hideGumCursor=true; draw(); S.hideGumCursor=false;
-    const d=devicePixelRatio, n=15;
-    const x0=Math.max(0,Math.round((sx-n/2)*d)), y0=Math.max(0,Math.round((sy-n/2)*d));
-    const img=ctx.getImageData(x0,y0,Math.round(n*d),Math.round(n*d)).data;
-    const counts={};
-    for(let i=0;i<img.length;i+=4){
-      const key=((img[i]>>3)<<10)|((img[i+1]>>3)<<5)|(img[i+2]>>3); // kwantiseren
-      counts[key]=(counts[key]||0)+1;
-    }
-    let best=null,bc=-1;
-    for(const k in counts) if(counts[k]>bc){ bc=counts[k]; best=+k; }
-    const r=((best>>10)&31)<<3, g=((best>>5)&31)<<3, b=(best&31)<<3;
-    return `rgb(${Math.min(255,r+4)},${Math.min(255,g+4)},${Math.min(255,b+4)})`;
-  }catch(e){ return '#FFFFFF'; }
-}
+/* De gum wist getekende objecten écht (muren/lijnen worden gesplitst, zie eraseVectorsAt) —
+   er wordt geen dekkend vlak meer over de ondergrond (PDF/afbeelding) geschilderd, die blijft
+   dus altijd in zijn originele kleur zichtbaar. Gebruik "Witvlak" om juist wél een stuk
+   ondergrond af te dekken. */
 function startGum(w){
   pushUndo();
   const r=S.gumSize/S.zoom;
-  const col = S.gumColor==='auto' ? sampleBgColor(S.mouse.x, S.mouse.y) : S.gumColor;
-  S.gum={id:idSeq++, type:'mask', pts:[{x:w.x, y:w.y}], r, color:col};
-  S.objects.push(S.gum);
+  S.gum={pts:[{x:w.x, y:w.y}], r};
   eraseVectorsAt(w, r);
   draw();
 }
@@ -3455,6 +3473,10 @@ function showProps(){
   if(['line','arrow','rect','circle','pencil','exitroute','dim'].includes(o.type)){
     h+=fld('Lijndikte (px)', `<input id="pTh2" type="number" min="0.5" max="24" step="0.5" value="${o.th||(o.type==='dim'?1.4:2)}">`);
   }
+  if(['line','arrow','rect','circle','pencil'].includes(o.type)){
+    h+=fld('Hoogte in 3D (m)', `<input id="pH3D" type="text" inputmode="decimal" value="${String(o.h3d||0).replace('.',',')}" placeholder="bijv. 1,20">`);
+    h+=`<div class="pfield" style="font-size:11px;color:var(--ink-dim)">In meters, met een komma voor centimeters (bijv. 1,20 voor 1 m 20). 0 = niet zichtbaar in de 3D-weergave. Hoger dan 0 geeft dit object een echte hoogte in 3D (bijv. een balustrade, opstand of kozijnlijst).</div>`;
+  }
   if(o.type==='dim'){
     h+=fld('Cijfergrootte (px)', `<input id="pFSize" type="number" min="8" max="40" step="1" value="${o.fsize||13}">`);
   }
@@ -3568,6 +3590,7 @@ function showProps(){
   bind('pTh', e=>{ o.th=Math.max(1, parseFloat(e.target.value)*S.scale||o.th); draw(); });
   bind('pTh2', e=>{ o.th=Math.max(0.5, parseFloat(e.target.value)||o.th); draw(); });
   bind('pFSize', e=>{ o.fsize=Math.max(8, parseInt(e.target.value)||o.fsize||13); draw(); });
+  bind('pH3D', e=>{ o.h3d=Math.min(6, Math.max(0, parseFloat(String(e.target.value).replace(',','.'))||0)); });
   bind('pW', e=>{ o.w=parseFloat(e.target.value)||o.w; draw(); });
   bind('pL', e=>{ o.l=parseFloat(e.target.value)||o.l; draw(); });
   bind('pSteps', e=>{ o.steps=parseInt(e.target.value)||o.steps; draw(); });
@@ -3662,19 +3685,10 @@ function showGumProps(){
     <div class="pfield" style="font-size:13px;font-weight:600;color:var(--ink)">Gum-instellingen</div>
     <div class="pfield"><label id="gSizeLbl">Grootte (${S.gumSize} px) — of toetsen [ en ]</label>
       <input id="gSize" type="range" min="4" max="80" value="${S.gumSize}"></div>
-    <div class="pfield"><label>Gumkleur</label>
-      <select id="gMode">
-        <option value="auto"${S.gumColor==='auto'?' selected':''}>Automatisch (achtergrond bemonsteren)</option>
-        <option value="#FFFFFF"${S.gumColor==='#FFFFFF'?' selected':''}>Wit</option>
-        <option value="custom"${S.gumColor!=='auto'&&S.gumColor!=='#FFFFFF'?' selected':''}>Aangepaste kleur…</option>
-      </select></div>
-    <div class="pfield" id="gCustomWrap" style="display:${S.gumColor!=='auto'&&S.gumColor!=='#FFFFFF'?'block':'none'}">
-      <label>Aangepaste kleur</label>
-      <input id="gCustom" type="color" value="${S.gumColor.startsWith&&S.gumColor.startsWith('#')&&S.gumColor!=='#FFFFFF'?S.gumColor:'#f0ede6'}" style="width:100%;height:32px;padding:2px;background:var(--chrome);border:1px solid var(--line);border-radius:6px;"></div>
     <div class="pfield" style="font-size:11.5px;color:var(--ink-dim);line-height:1.55">
-      <b>Automatisch</b> neemt bij elke gumstreek de achtergrondkleur over van de plek waar je begint —
-      de bewerking is daardoor niet zichtbaar in het eindresultaat.<br><br>
-      Getekende lijnen en muren worden écht gewist (muren worden gesplitst); de PDF eronder wordt afgedekt.
+      Getekende lijnen, muren en andere objecten worden écht gewist (muren/lijnen worden
+      gesplitst) — de ondergrond (PDF/afbeelding) blijft altijd gewoon zichtbaar in zijn
+      originele kleur. Gebruik "Witvlak" als je juist een stuk ondergrond wilt afdekken.
     </div>`;
   const gs=document.getElementById('gSize');
   gs.addEventListener('input', e=>{
@@ -3682,13 +3696,6 @@ function showGumProps(){
     document.getElementById('gSizeLbl').textContent=`Grootte (${S.gumSize} px) — of toetsen [ en ]`;
     draw();
   });
-  document.getElementById('gMode').addEventListener('change', e=>{
-    if(e.target.value==='custom'){ S.gumColor=document.getElementById('gCustom').value; }
-    else S.gumColor=e.target.value;
-    showGumProps();
-  });
-  const gc=document.getElementById('gCustom');
-  if(gc) gc.addEventListener('input', e=>{ S.gumColor=e.target.value; });
 }
 const noSelHTML=document.getElementById('noSel').outerHTML;
 function refreshProps(){ /* lichte refresh bij slepen: alleen bij muur lengte */ }
@@ -3709,7 +3716,7 @@ const HINTS={
   rect:'Sleep om een rechthoek te tekenen',
   circle:'Sleep om een cirkel of ellips te tekenen',
   arrow:'Sleep om een pijl te tekenen · pijlpunt aan het einde',
-  gum:'Sleep om te gummen · grootte en kleur staan rechts in het paneel · [ en ] = kleiner/groter · Ctrl+Z herstelt',
+  gum:'Sleep om getekende objecten te gummen (de ondergrond blijft zichtbaar) · grootte staat rechts in het paneel · [ en ] = kleiner/groter · Ctrl+Z herstelt',
   trim:'Stap 1: klik snijranden aan (Enter/klik in leeg = alle randen) · Stap 2: klik het te verwijderen deel · Shift+klik = verlengen i.p.v. trimmen · F = fence-sleep, C = crossing-sleep door meerdere objecten · U = laatste knip ongedaan · Esc = tool sluiten',
   fill:'Sleep een rechthoek die gevuld wordt met de statuskleur — bijv. zwart om een muuropening dicht te zetten · eigen kleur via selectie',
   wbdbo:'Sleep langs de scheidingsconstructie · aantal minuten instelbaar via selectie',
@@ -3755,7 +3762,6 @@ document.getElementById('tools').addEventListener('click', e=>{
   setTool(b.dataset.t);
 });
 function togglePin(t){
-  if(t==='select'||t==='pan'){ hint.textContent='Selecteren en Pannen staan altijd vastgezet.'; return; }
   const i=S.ui.pinned.indexOf(t);
   if(i>=0) S.ui.pinned.splice(i,1); else S.ui.pinned.push(t);
   rebuildPinned(); refreshPinMarks();
@@ -3768,6 +3774,7 @@ function refreshPinMarks(){
 function rebuildPinned(){
   const grid=document.getElementById('pinnedGrid');
   grid.innerHTML='';
+  document.getElementById('pinnedGroup').style.display = S.ui.pinned.length ? '' : 'none';
   S.ui.pinned.forEach(t=>{
     const src=document.querySelector(`#tools .tgroup:not(#pinnedGroup) .tool[data-t="${t}"]`);
     if(!src) return;
@@ -3776,11 +3783,8 @@ function rebuildPinned(){
     c.classList.toggle('on', S.tool===t);
     const p=c.querySelector('.pin');
     if(p){
-      if(t==='select'||t==='pan') p.remove();
-      else {
-        p.textContent='✕'; p.title='Losmaken uit Vastgezet';
-        p.addEventListener('click', ev=>{ ev.stopPropagation(); togglePin(t); });
-      }
+      p.textContent='✕'; p.title='Losmaken uit Vastgezet';
+      p.addEventListener('click', ev=>{ ev.stopPropagation(); togglePin(t); });
     }
     grid.appendChild(c);
   });
@@ -3873,7 +3877,7 @@ function addUnderlay(dataUrl, w0, h0){
 /* opslaan / openen project */
 document.getElementById('btnSave').onclick=()=>{
   const data=JSON.stringify({v:2, scale:S.scale, mode:S.mode, objects:S.objects,
-    ui:S.ui, gumSize:S.gumSize, gumColor:S.gumColor,
+    ui:S.ui, gumSize:S.gumSize,
     georef:{
       points: S.georef.points.map(p=>({id:p.id, wx:p.wx, wy:p.wy, rdX:p.rdX, rdY:p.rdY})),
       rmsThreshold: S.georef.rmsThreshold,
@@ -3894,12 +3898,9 @@ function loadProject(file){
       S.objects=d.objects||[];
       if(d.ui && Array.isArray(d.ui.pinned)){
         S.ui=d.ui;
-        if(!S.ui.pinned.includes('select')) S.ui.pinned.unshift('select');
-        if(!S.ui.pinned.includes('pan')) S.ui.pinned.splice(1,0,'pan');
         rebuildPinned(); refreshPinMarks();
       }
       if(d.gumSize) S.gumSize=d.gumSize;
-      if(d.gumColor) S.gumColor=d.gumColor;
       if(d.georef && Array.isArray(d.georef.points)){
         S.georef.points=d.georef.points;
         S.georef.rmsThreshold=d.georef.rmsThreshold||0.5;
@@ -4108,7 +4109,20 @@ function open3D(){
   const ov=document.getElementById('threeOverlay');
   ov.style.display='flex';
   document.getElementById('threeHint').textContent=
-    'Slepen = draaien · Shift+slepen of rechter muisknop = pannen · scrollen = zoomen';
+    'Slepen = draaien · Shift+slepen, middelste/rechter muisknop, of 🖐 Pannen = pannen · scrollen/knijpen = zoomen, tweevingerig vegen = pannen';
+  // 3D (muurhoogte én "Hoogte in 3D") gebruikt altijd de tekenschaal (px/m) — als een
+  // ondergrond gegeorefereerd is maar de tekenschaal niet is overgenomen, kloppen hoogtes
+  // niet met de werkelijke maat van die ondergrond. Waarschuw dan proactief.
+  if(S.georef.transform){
+    const sr=PTGeoRef.scaleAndRotation(S.georef.transform);
+    const ratio=sr.unitsPerMeter/S.scale;
+    if(ratio<0.97 || ratio>1.03){
+      document.getElementById('threeHint').textContent=
+        `⚠ Tekenschaal (${S.scale.toFixed(1)} px/m) wijkt af van de gegeorefereerde schaal van de ondergrond `+
+        `(${sr.unitsPerMeter.toFixed(1)} px/m) — hoogtes in 3D kloppen dan niet met de ondergrond. `+
+        `Klik "Gebruik als tekenschaal" in het paneel van "Georefereren" om dit recht te zetten.`;
+    }
+  }
   const tcv=document.getElementById('threeCv');
   if(!T3.renderer){
     T3.renderer=new THREE.WebGLRenderer({canvas:tcv, antialias:true, preserveDrawingBuffer:true});
@@ -4403,6 +4417,38 @@ function build3DScene(){
           new THREE.Vector3(X(o.x2),0.03,Z(o.y2))]);
         sc.add(new THREE.Line(g, new THREE.LineBasicMaterial({color:0x1B7F3B})));
         break; }
+      /* lijn/pijl/potlood/rechthoek/cirkel krijgen pas een 3D-volume als de gebruiker
+         er zelf een hoogte aan toekent (eigenschappenpaneel, "Hoogte in 3D") — bijv.
+         voor een balustrade, opstand of kozijnlijst die niet als muur bedoeld is */
+      case 'line': case 'arrow':
+        if(o.h3d>0) seg3D(o, o.h3d, 0.04,
+          o.customColor? new THREE.Color(o.customColor).getHex() : stateCol(o.state),
+          o.state==='slopen'?0.45:1);
+        break;
+      case 'pencil':
+        if(o.h3d>0 && o.pts && o.pts.length>1){
+          const col=o.customColor? new THREE.Color(o.customColor).getHex() : stateCol(o.state);
+          const opa=o.state==='slopen'?0.45:1;
+          for(let i=1;i<o.pts.length;i++)
+            seg3D({x1:o.pts[i-1].x,y1:o.pts[i-1].y,x2:o.pts[i].x,y2:o.pts[i].y}, o.h3d, 0.04, col, opa);
+        }
+        break;
+      case 'rect':
+        if(o.h3d>0) box3D(o.x+o.w/2, o.y+o.h/2, Math.max(0.05,M(o.w)), Math.max(0.05,M(o.h)), o.h3d,
+          0, o.customColor? new THREE.Color(o.customColor).getHex() : stateCol(o.state),
+          o.state==='slopen'?0.45:1);
+        break;
+      case 'circle':
+        if(o.h3d>0){
+          const col=o.customColor? new THREE.Color(o.customColor).getHex() : stateCol(o.state);
+          const opa=o.state==='slopen'?0.45:1;
+          const cyl=new THREE.Mesh(new THREE.CylinderGeometry(1,1,o.h3d,32,1,true),
+            new THREE.MeshLambertMaterial({color:col, transparent:opa<1, opacity:opa, side:THREE.DoubleSide}));
+          cyl.scale.set(Math.max(0.02,M(o.rx)), 1, Math.max(0.02,M(o.ry)));
+          cyl.position.set(X(o.x), o.h3d/2, Z(o.y));
+          sc.add(cyl);
+        }
+        break;
       default:
         if(FURNSET.has(o.type)){
           furn3D(o);
@@ -4439,9 +4485,23 @@ function loop3D(){
   };
   step();
 }
+function panBy3D(dx,dy){
+  const s=T3.dist*0.0016;
+  const rx=Math.sin(T3.theta),  rz=-Math.cos(T3.theta);   // schermrechts
+  const fx=-Math.cos(T3.theta), fz=-Math.sin(T3.theta);   // kijkrichting (horizontaal)
+  T3.tx -= (rx*dx + fx*dy)*s;
+  T3.tz -= (rz*dx + fz*dy)*s;
+}
 function init3DControls(tcv){
   let dragging=false, panning=false, lx=0, ly=0, cropStart=null;
   const cropDiv=document.getElementById('threeCrop');
+  const panBtn=document.getElementById('threePanBtn');
+  T3.panMode=false;
+  panBtn.addEventListener('click', ()=>{
+    T3.panMode=!T3.panMode;
+    panBtn.classList.toggle('on', T3.panMode);
+    tcv.style.cursor=T3.panMode?'grab':'grab';
+  });
   tcv.addEventListener('contextmenu', e=>e.preventDefault());
   tcv.addEventListener('pointerdown', e=>{
     lx=e.clientX; ly=e.clientY;
@@ -4453,7 +4513,7 @@ function init3DControls(tcv){
       tcv.setPointerCapture(e.pointerId);
       return;
     }
-    dragging=e.button===0; panning=e.button===2;
+    dragging=e.button===0; panning=e.button===2||e.button===1;
     tcv.setPointerCapture(e.pointerId);
     tcv.style.cursor='grabbing';
   });
@@ -4466,12 +4526,8 @@ function init3DControls(tcv){
       cropDiv.style.height=Math.abs(e.clientY-cropStart.y)+'px';
       return;
     }
-    if(panning || (dragging && e.shiftKey)){
-      const s=T3.dist*0.0016;
-      const rx=Math.sin(T3.theta),  rz=-Math.cos(T3.theta);   // schermrechts
-      const fx=-Math.cos(T3.theta), fz=-Math.sin(T3.theta);   // kijkrichting (horizontaal)
-      T3.tx -= (rx*dx + fx*dy)*s;
-      T3.tz -= (rz*dx + fz*dy)*s;
+    if(panning || (dragging && (e.shiftKey || T3.panMode))){
+      panBy3D(dx,dy);
     } else if(dragging){
       T3.theta+=dx*0.006;
       T3.phi=Math.min(1.52, Math.max(0.15, T3.phi-dy*0.005));
@@ -4492,11 +4548,19 @@ function init3DControls(tcv){
       setCropBtn();
       return;
     }
-    dragging=panning=false; tcv.style.cursor='grab';
+    dragging=panning=false; tcv.style.cursor=T3.panMode?'grab':'grab';
   });
+  /* trackpad: knijpen (ctrlKey, door de browser gezet bij pinch-zoom) blijft zoomen;
+     tweevingerig vegen (deltaX aanwezig, geen ctrlKey) pant i.p.v. zoomt — anders is
+     op een trackpad zonder rechtermuisknop niet te pannen. Gewoon verticaal scrollen
+     met een muiswiel (alleen deltaY) blijft zoomen zoals gebruikers gewend zijn. */
   tcv.addEventListener('wheel', e=>{
     e.preventDefault();
-    T3.dist=Math.min(120, Math.max(2, T3.dist*(e.deltaY>0?1.1:1/1.1)));
+    if(!e.ctrlKey && e.deltaX!==0){
+      panBy3D(-e.deltaX, -e.deltaY);
+    } else {
+      T3.dist=Math.min(120, Math.max(2, T3.dist*(e.deltaY>0?1.1:1/1.1)));
+    }
   }, {passive:false});
 }
 
