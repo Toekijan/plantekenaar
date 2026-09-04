@@ -523,6 +523,10 @@ const SYMBOL_NAMES = {
 };
 const SEG_TYPES=['wall','dim','line','arrow','wbdbo','exitroute'];
 const isSeg = o => SEG_TYPES.includes(o.type);
+/* types met een vaste, niet-aanpasbare kleur (brandveiligheids-/normconventie of eigen kleurveld) */
+const FIXED_COLOR_TYPES=['underlay','erase','mask','fill','legend','wbdbo','exitroute',
+  'extinguisher','hosereel','smokedetector','firealarm','exit'];
+const DEFAULT_DIM_COLOR='#1F5FA8';
 let exportMode=false;
 const paperC = () => exportMode ? '#FFFFFF' : '#F7F5F0';
 
@@ -890,7 +894,7 @@ function buildLegendItems(){
 function drawText(o){
   ctx.save();
   ctx.translate(o.x,o.y); ctx.rotate((o.rot||0)*Math.PI/180);
-  ctx.fillStyle=stateColor(o.state);
+  ctx.fillStyle=o.customColor||stateColor(o.state);
   ctx.font=`${o.size}px ui-sans-serif, system-ui`;
   ctx.textBaseline='top';
   o.text.split('\n').forEach((ln,i)=>ctx.fillText(ln,0,i*o.size*1.25));
@@ -901,10 +905,11 @@ function drawDim(o){
   const dx=o.x2-o.x1, dy=o.y2-o.y1, len=Math.hypot(dx,dy);
   if(len<1) return;
   const a=Math.atan2(dy,dx);
+  const col=o.customColor||DEFAULT_DIM_COLOR, th=o.th||1.4, fsize=o.fsize||13;
   ctx.save();
   ctx.translate(o.x1,o.y1); ctx.rotate(a);
-  ctx.strokeStyle='#1F5FA8'; ctx.fillStyle='#1F5FA8';
-  ctx.lineWidth=1.4;
+  ctx.strokeStyle=col; ctx.fillStyle=col;
+  ctx.lineWidth=th;
   ctx.beginPath();
   ctx.moveTo(0,0); ctx.lineTo(len,0);
   ctx.moveTo(0,-6); ctx.lineTo(0,6); ctx.moveTo(len,-6); ctx.lineTo(len,6);
@@ -913,7 +918,7 @@ function drawDim(o){
   ctx.moveTo(len,0); ctx.lineTo(len-9,-4); ctx.moveTo(len,0); ctx.lineTo(len-9,4);
   ctx.stroke();
   const label=fmtDist(m(len));
-  ctx.font='13px ui-monospace, monospace';
+  ctx.font=`${fsize}px ui-monospace, monospace`;
   ctx.textAlign='center'; ctx.textBaseline='bottom';
   const flip = a> Math.PI/2 || a<-Math.PI/2;
   if(flip){ ctx.save(); ctx.translate(len/2,-4); ctx.rotate(Math.PI); ctx.textBaseline='top'; ctx.fillText(label,0,0); ctx.restore(); }
@@ -927,7 +932,7 @@ function drawSymbol(o){
   ctx.translate(o.x,o.y);
   ctx.rotate((o.rot||0)*Math.PI/180);
   if(o.flip) ctx.scale(1,-1);
-  let c = stateColor(o.state);
+  let c = o.customColor||stateColor(o.state);
   if(['extinguisher','hosereel','smokedetector','firealarm'].includes(o.type)) c='#C1121F';
   if(o.type==='exit') c='#1B7F3B';
   ctx.strokeStyle=c; ctx.fillStyle=c; ctx.lineWidth=1.6;
@@ -1482,6 +1487,7 @@ function drawTemp(){
   }
   if(t.kind==='dim'){
     drawDim({x1:t.x1,y1:t.y1,x2:t.x2,y2:t.y2});
+    drawAngleArc(t.x1,t.y1,t.x2,t.y2);
   }
   if(t.kind==='line' || t.kind==='arrow'){
     ctx.globalAlpha=.75;
@@ -1625,6 +1631,30 @@ function hit(wx,wy){
 let lastPan=null;
 cv.addEventListener('contextmenu', e=>e.preventDefault());
 
+/* bepaalt welke andere objecten meeverslepen als onderlaag o wordt versleept:
+   objecten die aan o gekoppeld zijn (attachedTo===o.id) plus — als o zelf
+   "gekoppeld" staat — alle andere gekoppelde onderlagen en hun gekoppelde objecten */
+function dragGroupFor(o){
+  if(o.type!=='underlay') return [];
+  const underlayIds=new Set([o.id]);
+  if(o.linked){
+    S.objects.forEach(u=>{ if(u.type==='underlay' && u.linked && u.id!==o.id) underlayIds.add(u.id); });
+  }
+  const extra=[];
+  S.objects.forEach(x=>{
+    if(x===o) return;
+    if(underlayIds.has(x.id) || (x.attachedTo!=null && underlayIds.has(x.attachedTo))) extra.push(x);
+  });
+  return extra;
+}
+/* verschuift object o (met bewaarde startsnapshot og) met een vaste delta —
+   zelfde positielogica als de move-tak in de mousemove-handler, maar zonder snap */
+function translateBy(o, og, ddx, ddy){
+  if(isSeg(o)){ o.x1=og.x1+ddx; o.y1=og.y1+ddy; o.x2=og.x2+ddx; o.y2=og.y2+ddy; }
+  else if(o.type==='pencil'){ o.pts=og.pts.map(p=>({x:p.x+ddx, y:p.y+ddy})); }
+  else { o.x=og.x+ddx; o.y=og.y+ddy; }
+}
+
 cv.addEventListener('mousedown', e=>{
   const r=cv.getBoundingClientRect();
   const sx=e.clientX-r.left, sy=e.clientY-r.top;
@@ -1692,7 +1722,9 @@ cv.addEventListener('mousedown', e=>{
         }
         S.sel=o; showProps();
         pushUndo();
-        S.drag={o, mode:'move', dx:w.x, dy:w.y,
+        const group=dragGroupFor(o).map(x=>({o:x,
+          orig:JSON.parse(JSON.stringify(x,(k,v)=>k==='img'?undefined:v))}));
+        S.drag={o, mode:'move', dx:w.x, dy:w.y, group,
           orig:JSON.parse(JSON.stringify(o,(k,v)=>k==='img'?undefined:v))};
       } else { S.sel=null; showProps(); }
       draw(); break;
@@ -1762,7 +1794,7 @@ cv.addEventListener('mousedown', e=>{
       if(!S.temp) S.temp={kind:'dim', x1:wp.x,y1:wp.y,x2:wp.x,y2:wp.y};
       else {
         pushUndo();
-        S.objects.push({id:idSeq++, type:'dim', x1:S.temp.x1,y1:S.temp.y1,x2:wp.x,y2:wp.y});
+        S.objects.push({id:idSeq++, type:'dim', x1:S.temp.x1,y1:S.temp.y1,x2:wp.x,y2:wp.y, th:1.4, fsize:13});
         S.temp=null; draw();
       }
       break;
@@ -1823,20 +1855,23 @@ cv.addEventListener('mousemove', e=>{
     const o=S.drag.o;
     if(S.drag.mode==='move'){
       const dx=w.x-S.drag.dx, dy=w.y-S.drag.dy, og=S.drag.orig;
+      let ddx, ddy;
       if(isSeg(o)){
         let nx1=og.x1+dx, ny1=og.y1+dy;
         const sp=S.snap? snapPt({x:nx1,y:ny1}) : {x:nx1,y:ny1};
-        const ddx=sp.x-og.x1, ddy=sp.y-og.y1;
+        ddx=sp.x-og.x1; ddy=sp.y-og.y1;
         o.x1=og.x1+ddx; o.y1=og.y1+ddy; o.x2=og.x2+ddx; o.y2=og.y2+ddy;
       } else if(o.type==='pencil'){
         const p0=og.pts[0];
         const sp=S.snap? snapPt({x:p0.x+dx,y:p0.y+dy}) : {x:p0.x+dx,y:p0.y+dy};
-        const ddx=sp.x-p0.x, ddy=sp.y-p0.y;
+        ddx=sp.x-p0.x; ddy=sp.y-p0.y;
         o.pts=og.pts.map(p=>({x:p.x+ddx, y:p.y+ddy}));
       } else {
         const sp=S.snap? snapPt({x:og.x+dx,y:og.y+dy}) : {x:og.x+dx,y:og.y+dy};
+        ddx=sp.x-og.x; ddy=sp.y-og.y;
         o.x=sp.x; o.y=sp.y;
       }
+      if(S.drag.group) S.drag.group.forEach(g=>translateBy(g.o, g.orig, ddx, ddy));
       refreshProps(); draw();
     }
     if(S.drag.mode==='p1'||S.drag.mode==='p2'){
@@ -3316,6 +3351,10 @@ addEventListener('keydown', e=>{
 function delSel(){
   if(!S.sel) return;
   pushUndo();
+  if(S.sel.type==='underlay'){
+    const delId=S.sel.id;
+    S.objects.forEach(o=>{ if(o.attachedTo===delId) o.attachedTo=null; });
+  }
   S.objects=S.objects.filter(o=>o!==S.sel);
   S.sel=null; showProps(); updCount(); draw();
 }
@@ -3357,6 +3396,10 @@ function refreshUnderlayList(){
       <span class="layerLabel" style="flex:1 1 auto; font-size:12px; cursor:pointer; overflow:hidden;
         text-overflow:ellipsis; white-space:nowrap; ${sel?'font-weight:600;color:var(--ink)':'color:var(--ink-dim)'}"
         title="Klik om deze kaart te selecteren">${sel?'▶ ':''}Kaart ${n}</span>
+      <label style="flex:0 0 auto; display:flex; align-items:center; gap:3px; font-size:10px; color:var(--ink-dim); cursor:pointer;"
+        title="Gekoppeld: deze kaart en alle andere gekoppelde kaarten (+ hun gekoppelde tekeningen) verslepen samen">
+        <input type="checkbox" class="layerLink"${o.linked?' checked':''}> koppel
+      </label>
       <input class="layerOpa" type="range" min="10" max="100" value="${Math.round((o.opacity??1)*100)}"
         style="width:70px;" title="Transparantie">
       <span class="layerOpaVal" style="flex:0 0 auto; font-size:10px; color:var(--ink-dim); width:30px; text-align:right;">${Math.round((o.opacity??1)*100)}%</span>
@@ -3366,6 +3409,7 @@ function refreshUnderlayList(){
     const o=S.objects.find(x=>x.id===parseInt(row.dataset.layerId));
     if(!o) return;
     row.querySelector('.layerLabel').addEventListener('click', ()=>{ S.sel=o; showProps(); draw(); });
+    row.querySelector('.layerLink').addEventListener('change', e=>{ o.linked=e.target.checked; draw(); });
     const rng=row.querySelector('.layerOpa'), val=row.querySelector('.layerOpaVal');
     rng.addEventListener('input', e=>{
       o.opacity=parseInt(e.target.value)/100;
@@ -3387,6 +3431,17 @@ function showProps(){
   }
   let h=`<div class="pfield" style="font-size:13px;font-weight:600;color:var(--ink)">${SYMBOL_NAMES[o.type]||o.type}</div>`;
 
+  if(o.type!=='underlay'){
+    const attachUnderlays=[...S.objects.filter(u=>u.type==='underlay')].reverse(); // top→onder, zelfde nummering als onderlagen-paneel
+    if(attachUnderlays.length){
+      h+=fld('Gekoppeld aan', `<select id="pAttach">
+        <option value=""${!o.attachedTo?' selected':''}>Los (ondergrond)</option>
+        ${attachUnderlays.map((u,i)=>`<option value="${u.id}"${o.attachedTo===u.id?' selected':''}>Kaart ${i+1}</option>`).join('')}
+      </select>`);
+      h+=`<div class="pfield" style="font-size:11px;color:var(--ink-dim)">Bepaalt of dit object meebeweegt wanneer je de gekozen kaart verplaatst.</div>`;
+    }
+  }
+
   if(o.state!==undefined){
     h+=fld('Status', `<select id="pState">
       <option value="bestaand"${o.state==='bestaand'?' selected':''}>Bestaand (zwart)</option>
@@ -3397,14 +3452,18 @@ function showProps(){
     h+=fld('Dikte (m)', `<input id="pTh" type="number" step="0.01" min="0.02" value="${(o.th/S.scale).toFixed(2)}">`);
     h+=fld('Lengte', `<input type="text" disabled value="${m(Math.hypot(o.x2-o.x1,o.y2-o.y1)).toFixed(2)} m">`);
   }
-  if(['line','arrow','rect','circle','pencil','exitroute'].includes(o.type)){
-    h+=fld('Lijndikte (px)', `<input id="pTh2" type="number" min="0.5" max="24" step="0.5" value="${o.th||2}">`);
+  if(['line','arrow','rect','circle','pencil','exitroute','dim'].includes(o.type)){
+    h+=fld('Lijndikte (px)', `<input id="pTh2" type="number" min="0.5" max="24" step="0.5" value="${o.th||(o.type==='dim'?1.4:2)}">`);
   }
-  if(o.type==='line'||o.type==='arrow'||o.type==='exitroute'){
+  if(o.type==='dim'){
+    h+=fld('Cijfergrootte (px)', `<input id="pFSize" type="number" min="8" max="40" step="1" value="${o.fsize||13}">`);
+  }
+  if(o.type==='line'||o.type==='arrow'||o.type==='exitroute'||o.type==='dim'){
     h+=fld('Lengte', `<input type="text" disabled value="${m(Math.hypot(o.x2-o.x1,o.y2-o.y1)).toFixed(2)} m">`);
   }
-  if(['wall','line','arrow','rect','circle','pencil'].includes(o.type)){
-    const cur=(o.customColor||stateColor(o.state)).toLowerCase();
+  if(!FIXED_COLOR_TYPES.includes(o.type)){
+    const defaultCol = o.type==='dim' ? DEFAULT_DIM_COLOR : stateColor(o.state);
+    const cur=(o.customColor||defaultCol).toLowerCase();
     const grayMatch=/^#([0-9a-f]{2})\1\1$/.exec(cur);
     const grayVal=grayMatch ? parseInt(grayMatch[1],16) : 0;
     h+=fld('Kleur', `<input id="pLineC" type="color" value="${cur}">`);
@@ -3413,7 +3472,7 @@ function showProps(){
       ['#000000','#333333','#555555','#808080','#AAAAAA'].map(c=>
         `<button class="pbtn swatch" data-c="${c}" title="${c}" style="background:${c};width:26px;height:26px;padding:0;border-radius:5px;flex:none;border:1px solid var(--line)"></button>`).join('')
     }</div>`;
-    h+=`<div class="prow" style="margin-bottom:10px"><button class="pbtn" id="pLineCAuto">Statuskleur gebruiken</button></div>`;
+    h+=`<div class="prow" style="margin-bottom:10px"><button class="pbtn" id="pLineCAuto">${o.state!==undefined?'Statuskleur gebruiken':'Standaardkleur gebruiken'}</button></div>`;
   }
   if(o.w!==undefined && o.type!=='erase' && o.type!=='underlay'){
     h+=fld('Breedte (m)', `<input id="pW" type="number" step="0.05" min="0.1" value="${o.w}">`);
@@ -3505,8 +3564,10 @@ function showProps(){
 
   const bind=(id,fn)=>{ const el=document.getElementById(id); if(el) el.addEventListener('input',fn); };
   bind('pState', e=>{ o.state=e.target.value; draw(); });
+  bind('pAttach', e=>{ o.attachedTo=e.target.value?parseInt(e.target.value):null; draw(); });
   bind('pTh', e=>{ o.th=Math.max(1, parseFloat(e.target.value)*S.scale||o.th); draw(); });
   bind('pTh2', e=>{ o.th=Math.max(0.5, parseFloat(e.target.value)||o.th); draw(); });
+  bind('pFSize', e=>{ o.fsize=Math.max(8, parseInt(e.target.value)||o.fsize||13); draw(); });
   bind('pW', e=>{ o.w=parseFloat(e.target.value)||o.w; draw(); });
   bind('pL', e=>{ o.l=parseFloat(e.target.value)||o.l; draw(); });
   bind('pSteps', e=>{ o.steps=parseInt(e.target.value)||o.steps; draw(); });
